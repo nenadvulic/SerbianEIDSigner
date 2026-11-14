@@ -35,55 +35,37 @@ public struct Envelope<Payload: Codable>: Codable {
     }
 }
 
-/// Minimal dynamic JSON value.
-public enum JSONValue: Codable, Equatable, Sendable {
-    case null
-    case bool(Bool)
-    case number(Double)
-    case string(String)
-    case array([JSONValue])
-    case object([String: JSONValue])
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.singleValueContainer()
-        if c.decodeNil() { self = .null }
-        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
-        else if let n = try? c.decode(Double.self) { self = .number(n) }
-        else if let s = try? c.decode(String.self) { self = .string(s) }
-        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
-        else { self = .object(try c.decode([String: JSONValue].self)) }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        switch self {
-        case .null: try c.encodeNil()
-        case .bool(let b): try c.encode(b)
-        case .number(let n): try c.encode(n)
-        case .string(let s): try c.encode(s)
-        case .array(let a): try c.encode(a)
-        case .object(let o): try c.encode(o)
-        }
-    }
+/// Typed request input, decoded per operation. PIN-bearing inputs go
+/// Decoder -> Secret directly, with no dynamic/Encodable intermediary.
+public enum RequestInput {
+    case none
+    case getInfo(GetInfoInput)
+    case getTerminals(GetTerminalsInput)
+    case getCertificates(GetCertificatesInput)
+    case getSignedXml(GetSignedXmlInput)
 }
 
 public struct Request: Decodable {
     public let operation: Operation
-    public let input: JSONValue?
+    public let input: RequestInput
 
-    /// Decodes the dynamic input into a typed struct. The PIN, if any, is
-    /// built directly into a `Secret` (never an Encodable value).
-    public func decodeInput<T: Decodable>(_ type: T.Type) throws -> T {
-        guard let input else {
-            throw DecodingError.valueNotFound(T.self, .init(codingPath: [], debugDescription: "missing input"))
+    private enum CodingKeys: String, CodingKey { case operation, input }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        operation = try c.decode(Operation.self, forKey: .operation)
+        switch operation {
+        case .getInfo: input = .getInfo(try c.decode(GetInfoInput.self, forKey: .input))
+        case .getTerminals: input = .getTerminals(try c.decode(GetTerminalsInput.self, forKey: .input))
+        case .getCertificates: input = .getCertificates(try c.decode(GetCertificatesInput.self, forKey: .input))
+        case .getSignedXml: input = .getSignedXml(try c.decode(GetSignedXmlInput.self, forKey: .input))
+        case .onOpenEvent, .getProviders: input = .none
         }
-        let data = try JSONEncoder().encode(input)
-        return try JSONDecoder().decode(T.self, from: data)
     }
 }
 
 /// Holds PIN bytes. Deliberately not Encodable; redacted when printed; zeroized on deinit.
-public final class Secret: Decodable, CustomStringConvertible, CustomDebugStringConvertible {
+public final class Secret: Decodable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     private var storage: [UInt8]
     public var bytes: [UInt8] { storage }
 
@@ -96,6 +78,7 @@ public final class Secret: Decodable, CustomStringConvertible, CustomDebugString
 
     public var description: String { "<redacted>" }
     public var debugDescription: String { "<redacted>" }
+    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
 
     deinit {
         storage.withUnsafeMutableBytes { buf in

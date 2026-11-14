@@ -6,7 +6,7 @@ final class MessagesTests: XCTestCase {
         let json = #"{"operation":"GET_INFO","input":{"sbSession":"s","host":"eporezi.purs.gov.rs","language":"sr-Cyrl-RS"}}"#
         let req = try JSONDecoder().decode(Request.self, from: Data(json.utf8))
         XCTAssertEqual(req.operation, .getInfo)
-        let input = try req.decodeInput(GetInfoInput.self)
+        guard case .getInfo(let input) = req.input else { return XCTFail("wrong input") }
         XCTAssertEqual(input.sbSession, "s")
         XCTAssertEqual(input.host, "eporezi.purs.gov.rs")
         XCTAssertEqual(input.language, "sr-Cyrl-RS")
@@ -26,7 +26,7 @@ final class MessagesTests: XCTestCase {
         let json = #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"a","name":"n"},"pin":"1234","xml":"<x/>"}}"#
         let req = try JSONDecoder().decode(Request.self, from: Data(json.utf8))
         XCTAssertEqual(req.operation, .getSignedXml)
-        let input = try req.decodeInput(GetSignedXmlInput.self)
+        guard case .getSignedXml(let input) = req.input else { return XCTFail("wrong input") }
         XCTAssertEqual(input.certificate, Alias(alias: "a", name: "n"))
         XCTAssertEqual(input.xml, "<x/>")
         XCTAssertEqual(input.pin.bytes, Array("1234".utf8))
@@ -49,6 +49,22 @@ final class MessagesTests: XCTestCase {
     func testRequestWithoutInput() throws {
         let req = try JSONDecoder().decode(Request.self, from: Data(#"{"operation":"ON_OPEN_EVENT"}"#.utf8))
         XCTAssertEqual(req.operation, .onOpenEvent)
-        XCTAssertNil(req.input)
+        if case .none = req.input {} else { XCTFail("expected none") }
+    }
+
+    func testPinNotExposedByReflection() throws {
+        let pin = "PINSECRET77"
+        let jsons = [
+            #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"a","name":"n"},"pin":"\#(pin)","xml":"<x/>"}}"#,
+            #"{"operation":"GET_CERTIFICATES","input":{"pin":"\#(pin)","terminalId":1}}"#,
+        ]
+        for j in jsons {
+            let req = try JSONDecoder().decode(Request.self, from: Data(j.utf8))
+            var dumped = ""
+            dump(req, to: &dumped)
+            for text in [String(reflecting: req), "\(req)", dumped] {
+                XCTAssertFalse(text.contains(pin), text)
+            }
+        }
     }
 }
