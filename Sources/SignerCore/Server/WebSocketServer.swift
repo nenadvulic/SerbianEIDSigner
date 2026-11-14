@@ -11,6 +11,13 @@ public protocol MessageHandler: AnyObject {
     func onOpen(send: @escaping (Data) -> Void)
     /// Called for each successfully decoded request frame on that connection.
     func handle(_ request: Request, send: @escaping (Data) -> Void)
+    /// Called once per accepted connection to get the handler for that connection, so per-connection
+    /// state (e.g. the selected terminal) is never shared between clients. Default: the handler itself.
+    func makeConnectionHandler() -> MessageHandler
+}
+
+public extension MessageHandler {
+    func makeConnectionHandler() -> MessageHandler { self }
 }
 
 public final class WebSocketServer {
@@ -108,7 +115,7 @@ private final class WebSocketFrameHandler: ChannelInboundHandler {
     private var buffer = ByteBuffer()
     private var assembling = false
 
-    init(handler: MessageHandler) { self.handler = handler }
+    init(handler: MessageHandler) { self.handler = handler.makeConnectionHandler() }
 
     private func makeSend(_ context: ChannelHandlerContext) -> (Data) -> Void {
         let channel = context.channel

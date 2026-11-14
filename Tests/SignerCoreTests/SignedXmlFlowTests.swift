@@ -61,4 +61,24 @@ final class SignedXmlFlowTests: XCTestCase {
         let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
         XCTAssertEqual(j["status"] as? Int, 1500)
     }
+
+    func testTerminalIsPerConnectionNotShared() throws {
+        let recorder = TerminalRecorder()
+        var stub = StubCardService()
+        stub.recorder = recorder
+        let server = Dispatcher(card: stub)
+        let a = server.makeConnectionHandler()
+        let b = server.makeConnectionHandler()
+        func certs(_ t: Int) throws -> Request {
+            try JSONDecoder().decode(Request.self, from: Data(#"{"operation":"GET_CERTIFICATES","input":{"pin":"1234","terminalId":\#(t)}}"#.utf8))
+        }
+        _ = try respond(a, certs(1))
+        _ = try respond(b, certs(0))
+        let signReq = try JSONDecoder().decode(Request.self, from: Data(req.utf8))
+        let resp = try JSONSerialization.jsonObject(with: respond(a, signReq).data) as? [String: Any]
+        XCTAssertEqual(resp?["status"] as? Int, 0)
+        XCTAssertEqual(Set(recorder.recorded), [1], "A signs only on its own terminal 1")
+        _ = try respond(b, signReq)
+        XCTAssertEqual(recorder.recorded.suffix(2), [0, 0], "B signs on terminal 0")
+    }
 }
