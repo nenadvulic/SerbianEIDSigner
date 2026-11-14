@@ -121,7 +121,7 @@ final class PKCS15Tests: XCTestCase {
     }
 
     func testServiceFilterKeepsOnlySigningCert() throws {
-        let aliases = PKCS15.signingAliases(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
+        let aliases = try PKCS15.signingAliases(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
         XCTAssertEqual(aliases.map { $0.name }, ["Signature"])
     }
 
