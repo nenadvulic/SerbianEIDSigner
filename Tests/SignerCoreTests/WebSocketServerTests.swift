@@ -33,13 +33,15 @@ final class WebSocketServerTests: XCTestCase {
     }
 
     func testTwoConcurrentClientsEachGetOnOpen() async throws {
-        let server = WebSocketServer(ports: [try freePort()], originAllowlist: [], handler: OpenHandler())
+        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
         let port = try server.start()
         defer { server.stop() }
 
         let url = URL(string: "ws://127.0.0.1:\(port)")!
-        let t1 = URLSession.shared.webSocketTask(with: url)
-        let t2 = URLSession.shared.webSocketTask(with: url)
+        var req = URLRequest(url: url)
+        req.setValue("https://eporezi.purs.gov.rs", forHTTPHeaderField: "Origin")
+        let t1 = URLSession.shared.webSocketTask(with: req)
+        let t2 = URLSession.shared.webSocketTask(with: req)
         t1.resume(); t2.resume()
         defer { t1.cancel(with: .goingAway, reason: nil); t2.cancel(with: .goingAway, reason: nil) }
 

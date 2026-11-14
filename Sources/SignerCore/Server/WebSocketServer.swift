@@ -17,7 +17,7 @@ public final class WebSocketServer {
     public static let defaultPorts = [17165, 20806, 65097]
 
     private let ports: [Int]
-    // Task 4 enforces this at the handshake (shouldUpgrade); threaded through here only.
+    // Enforced at the handshake: upgrade only when the request Origin is listed.
     private let originAllowlist: [String]
     private let handler: MessageHandler
     private var group: MultiThreadedEventLoopGroup?
@@ -33,20 +33,32 @@ public final class WebSocketServer {
     public func start() throws -> Int {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let handler = self.handler
+        let allowlist = self.originAllowlist
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 let upgrader = NIOWebSocketServerUpgrader(
-                    shouldUpgrade: { channel, _ in
-                        // Task 4: Origin check goes here.
-                        channel.eventLoop.makeSucceededFuture(HTTPHeaders())
+                    shouldUpgrade: { channel, head in
+                        // Missing or non-allowlisted Origin: decline (nil) so the request
+                        // falls through to ForbiddenHandler, which answers 403.
+                        guard let origin = head.headers.first(name: "Origin"),
+                              allowlist.contains(origin) else {
+                            return channel.eventLoop.makeSucceededFuture(nil)
+                        }
+                        return channel.eventLoop.makeSucceededFuture(HTTPHeaders())
                     },
                     upgradePipelineHandler: { channel, _ in
-                        channel.pipeline.addHandler(WebSocketFrameHandler(handler: handler))
+                        channel.pipeline.removeHandler(name: ForbiddenHandler.name).flatMapError { _ in
+                            channel.eventLoop.makeSucceededVoidFuture()
+                        }.flatMap {
+                            channel.pipeline.addHandler(WebSocketFrameHandler(handler: handler))
+                        }
                     })
                 let config: NIOHTTPServerUpgradeConfiguration = (
                     upgraders: [upgrader], completionHandler: { _ in })
-                return channel.pipeline.configureHTTPServerPipeline(withServerUpgrade: config)
+                return channel.pipeline.configureHTTPServerPipeline(withServerUpgrade: config).flatMap {
+                    channel.pipeline.addHandler(ForbiddenHandler(), name: ForbiddenHandler.name)
+                }
             }
 
         var lastError: Error = IOError(errnoCode: EADDRINUSE, reason: "no ports configured")
@@ -69,6 +81,22 @@ public final class WebSocketServer {
         try? group?.syncShutdownGracefully()
         channel = nil
         group = nil
+    }
+}
+
+/// Receives only requests that were NOT upgraded (declined handshake) and answers 403.
+private final class ForbiddenHandler: ChannelInboundHandler, RemovableChannelHandler {
+    static let name = "ForbiddenHandler"
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        guard case .head = unwrapInboundIn(data) else { return }
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Length", value: "0")
+        headers.add(name: "Connection", value: "close")
+        context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .forbidden, headers: headers))), promise: nil)
+        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in context.close(promise: nil) }
     }
 }
 
