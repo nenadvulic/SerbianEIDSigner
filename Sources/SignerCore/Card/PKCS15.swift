@@ -99,6 +99,8 @@ enum PKCS15 {
     /// Selects the applet, verifies the PIN (exactly one VERIFY, never retried), then lists all certificates.
     static func certificates(from transport: APDUTransport, pin: Secret) throws -> [CardCertificate] {
         do {
+            // NOTE: `pin.bytes` shares Secret's copy-on-write buffer, so zeroizing `digits` wipes (and detaches)
+            // this copy only; the real `Secret.storage` bytes are cleared in Secret.deinit, not here.
             var digits = pin.bytes
             defer { Secret.zeroize(&digits) }
             guard (4...8).contains(digits.count), digits.allSatisfy({ (0x30...0x39).contains($0) }) else {
@@ -147,27 +149,39 @@ enum PKCS15 {
         0x30, 0x31, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
     ]
 
-    /// On-card RSASSA-PKCS1-v1_5 over a SHA-256 digest: VERIFY (once), MSE SET (key FID, algorithm 02 = the card
-    /// pads the DigestInfo), PSO COMPUTE DIGITAL SIGNATURE. Approach from SerbianEIDToken (MIT).
-    /// Only the nonRepudiation (qualified signature) certificate's key is used.
-    static func sign(from transport: APDUTransport, pin: Secret, alias: Alias, sha256Digest: Data) throws -> Data {
-        guard sha256Digest.count == 32 else { throw CardError.generic }
+    /// One card session for a whole signing operation: VERIFY once (never retried), enumerate certificates once,
+    /// resolve the signing certificate's DER and private-key FID, then hand `body` the DER plus a `sign`
+    /// closure (on-card RSASSA-PKCS1-v1_5 over a SHA-256 digest: MSE SET with algorithm 02 = the card pads the
+    /// DigestInfo, then PSO COMPUTE DIGITAL SIGNATURE). Only a nonRepudiation certificate's key is used.
+    /// Approach from SerbianEIDToken (MIT).
+    static func withSigningKey<T>(from transport: APDUTransport, pin: Secret, alias: Alias,
+                                  _ body: (_ certDER: Data, _ sign: (Data) throws -> Data) throws -> T) throws -> T {
         guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias == alias }),
               c.isSigning, let keyFID = c.privateKeyFID, keyFID.count == 2 else {
             throw CardError.generic
         }
-        let digestInfo = sha256DigestInfoPrefix + [UInt8](sha256Digest)
-        do {
-            let mse = try transport.transmit(APDU(ins: 0x22, p1: 0x41, p2: 0xB6, data: [0x80, 0x01, 0x02, 0x84, 0x02] + keyFID))
-            guard mse.isOK else { throw CardError.generic }
-            let pso = try transport.transmit(APDU(ins: 0x2A, p1: 0x9E, p2: 0x00, data: digestInfo, le: 256))
-            guard pso.isOK, !pso.data.isEmpty else { throw CardError.generic }
-            return Data(pso.data)
-        } catch let e as CardError {
-            throw e
-        } catch {
-            throw CardError.generic
+        let sign: (Data) throws -> Data = { sha256Digest in
+            guard sha256Digest.count == 32 else { throw CardError.generic }
+            let digestInfo = sha256DigestInfoPrefix + [UInt8](sha256Digest)
+            do {
+                let mse = try transport.transmit(APDU(ins: 0x22, p1: 0x41, p2: 0xB6, data: [0x80, 0x01, 0x02, 0x84, 0x02] + keyFID))
+                guard mse.isOK else { throw CardError.generic }
+                let pso = try transport.transmit(APDU(ins: 0x2A, p1: 0x9E, p2: 0x00, data: digestInfo, le: 256))
+                guard pso.isOK, !pso.data.isEmpty else { throw CardError.generic }
+                return Data(pso.data)
+            } catch let e as CardError {
+                throw e
+            } catch {
+                throw CardError.generic
+            }
         }
+        return try body(c.der, sign)
+    }
+
+    /// Convenience over `withSigningKey` for a single digest.
+    static func sign(from transport: APDUTransport, pin: Secret, alias: Alias, sha256Digest: Data) throws -> Data {
+        guard sha256Digest.count == 32 else { throw CardError.generic }
+        return try withSigningKey(from: transport, pin: pin, alias: alias) { _, sign in try sign(sha256Digest) }
     }
 
     /// Certificate file: 6 bytes header, zlib stream (2-byte header, raw deflate, Adler-32).

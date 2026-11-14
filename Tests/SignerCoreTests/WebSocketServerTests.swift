@@ -50,4 +50,23 @@ final class WebSocketServerTests: XCTestCase {
             XCTAssertEqual(s, "ON_OPEN_EVENT")
         }
     }
+
+    private func assertOnOpen(host: String, port: Int) async throws {
+        var req = URLRequest(url: URL(string: "ws://\(host):\(port)")!)
+        req.setValue("https://eporezi.purs.gov.rs", forHTTPHeaderField: "Origin")
+        let t = URLSession.shared.webSocketTask(with: req)
+        t.resume()
+        defer { t.cancel(with: .goingAway, reason: nil) }
+        guard case .string(let s) = try await t.receive() else { return XCTFail("expected text") }
+        XCTAssertEqual(s, "ON_OPEN_EVENT")
+    }
+
+    func testReachableViaLocalhostAndBothLoopbackFamilies() async throws {
+        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
+        let port = try server.start()
+        defer { server.stop() }
+        try await assertOnOpen(host: "localhost", port: port)
+        try await assertOnOpen(host: "127.0.0.1", port: port)
+        try await assertOnOpen(host: "[::1]", port: port)
+    }
 }

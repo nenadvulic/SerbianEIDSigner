@@ -179,6 +179,20 @@ final class PKCS15Tests: XCTestCase {
         }
     }
 
+    func testSigningKeySessionVerifiesOnceAndEnumeratesCertsOnce() throws {
+        let card = makeSigningCard()
+        let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
+        let digest = Data(count: 32)
+        let der = try PKCS15.withSigningKey(from: card, pin: Secret(bytes: Array("1234".utf8)), alias: alias) { der, sign in
+            _ = try sign(digest)
+            _ = try sign(digest)
+            return der
+        }
+        XCTAssertEqual(der, PKCS15Fixtures.certSignature)
+        XCTAssertEqual(card.sent.filter { $0.ins == 0x20 }.count, 1)
+        XCTAssertEqual(card.sent.filter { $0.ins == 0xA4 && $0.p1 == 0x04 }.count, 1, "applet selected once")
+    }
+
     func testSignWrongPINNeverReachesSigning() {
         let card = makeSigningCard()
         card.verifySW = 0x63C2

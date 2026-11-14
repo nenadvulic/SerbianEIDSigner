@@ -18,6 +18,7 @@ struct StubCardService: CardService {
     var signBytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
     var signError: CardError?
     var recorder: TerminalRecorder?
+    let sessionCount = SessionCounter()
     func providers() -> [Provider] { [Provider(id: 1, name: "MUP")] }
     func terminals(providerId: Int) throws -> [Terminal] {
         if let e = terminalError { throw e }
@@ -27,16 +28,23 @@ struct StubCardService: CardService {
         if let e = certError { throw e }
         return certList
     }
-    func signingCertificate(providerId: Int, terminalId: Int, alias: Alias, pin: Secret) throws -> Data {
+    func withSigningKey(providerId: Int, terminalId: Int, alias: Alias, pin: Secret,
+                        build: (Data, (Data) throws -> Data) throws -> String) throws -> String {
         recorder?.record(terminalId)
+        sessionCount.increment()
         if let e = signCertError { throw e }
-        return signCertDER
+        return try build(signCertDER) { _ in
+            if let e = signError { throw e }
+            return signBytes
+        }
     }
-    func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data {
-        recorder?.record(terminalId)
-        if let e = signError { throw e }
-        return signBytes
-    }
+}
+
+final class SessionCounter {
+    private let lock = NSLock()
+    private var n = 0
+    func increment() { lock.lock(); n += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
 }
 
 extension XCTestCase {
