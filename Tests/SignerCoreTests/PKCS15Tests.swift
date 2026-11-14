@@ -119,4 +119,17 @@ final class PKCS15Tests: XCTestCase {
             XCTAssertEqual($0 as? CardError, .generic)
         }
     }
+
+    func testServiceFilterKeepsOnlySigningCert() throws {
+        let aliases = PKCS15.signingAliases(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
+        XCTAssertEqual(aliases.map { $0.name }, ["Signature"])
+    }
+
+    func testMUPATRGate() {
+        let known = Array(Data(base64Encoded: "O/mWAACAMf5FU0NFNyBHQ04zXg==")!)  // 3BF99600008031FE45534345372047434E335E
+        XCTAssertEqual(known.first, 0x3B)
+        XCTAssertTrue(PKCS15.isMUPATR(known))
+        XCTAssertFalse(PKCS15.isMUPATR([0x3B, 0x8F, 0x80, 0x01]))
+        XCTAssertFalse(PKCS15.isMUPATR([]))
+    }
 }
