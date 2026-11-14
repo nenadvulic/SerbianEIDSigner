@@ -99,14 +99,15 @@ enum PKCS15 {
     /// Selects the applet, verifies the PIN (exactly one VERIFY, never retried), then lists all certificates.
     static func certificates(from transport: APDUTransport, pin: Secret) throws -> [CardCertificate] {
         do {
-            let digits = pin.bytes
+            var digits = pin.bytes
+            defer { Secret.zeroize(&digits) }
             guard (4...8).contains(digits.count), digits.allSatisfy({ (0x30...0x39).contains($0) }) else {
                 throw CardError.pinIncorrect
             }
             let reader = FileReader(transport: transport)
             try reader.selectApplet()
             var padded = digits + [UInt8](repeating: 0, count: 8 - digits.count)
-            defer { for i in padded.indices { padded[i] = 0 } }
+            defer { Secret.zeroize(&padded) }
             let verify = try transport.transmit(APDU(ins: 0x20, p1: 0x00, p2: 0x80, data: padded))
             switch verify.sw {
             case 0x9000: break
