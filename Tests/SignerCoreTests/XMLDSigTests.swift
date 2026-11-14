@@ -42,4 +42,27 @@ final class XMLDSigTests: XCTestCase {
         let si = try XMLDSigBuilder.canonicalizeSignedInfo(inSignedXML: out)
         XCTAssertEqual(received, Data(SHA256.hash(data: si)))
     }
+
+    func testEmptyDocumentThrows() {
+        XCTAssertThrowsError(try XMLDSigBuilder().build(documentXML: "", certDER: Data(), issuer: "x", serial: Data([1]), sign: { $0 }))
+    }
+
+    /// Golden value written by hand from the C14N 1.0 spec (not produced by our code): SignedInfo
+    /// inherits the default dsig namespace (declared on Signature) and xmlns:e (declared on the root).
+    /// The apex must render both: default namespace first, then prefixed ones; xmlns:l is out of scope.
+    func testSignedInfoGoldenInheritedNamespaces() throws {
+        let doc = "<e:Invoice xmlns:e=\"urn:e\" xmlns=\"urn:def\"><e:Line xmlns:l=\"urn:l\" l:a=\"1\"/></e:Invoice>"
+        let out = try XMLDSigBuilder().build(documentXML: doc, certDER: Data([1]), issuer: "I", serial: Data([1]), sign: { _ in Data([9]) })
+        let got = String(data: try XMLDSigBuilder.canonicalizeSignedInfo(inSignedXML: out), encoding: .utf8)!
+        let start = out.range(of: "<DigestValue>")!.upperBound
+        let end = out.range(of: "</DigestValue>")!.lowerBound
+        let dv = String(out[start..<end])
+        let expected = "<SignedInfo xmlns=\"http://www.w3.org/2000/09/xmldsig#\" xmlns:e=\"urn:e\">"
+            + "<CanonicalizationMethod Algorithm=\"http://www.w3.org/TR/2001/REC-xml-c14n-20010315\"></CanonicalizationMethod>"
+            + "<SignatureMethod Algorithm=\"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256\"></SignatureMethod>"
+            + "<Reference URI=\"\"><Transforms><Transform Algorithm=\"http://www.w3.org/2000/09/xmldsig#enveloped-signature\"></Transform></Transforms>"
+            + "<DigestMethod Algorithm=\"http://www.w3.org/2001/04/xmlenc#sha256\"></DigestMethod>"
+            + "<DigestValue>\(dv)</DigestValue></Reference></SignedInfo>"
+        XCTAssertEqual(got, expected)
+    }
 }
