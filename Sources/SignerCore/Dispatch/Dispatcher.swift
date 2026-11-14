@@ -71,14 +71,22 @@ public final class Dispatcher: MessageHandler {
         case .getProviders:
             emit(.getProviders, ProvidersPayload(providers: card.providers()), send)
         case .getTerminals:
-            guard case .getTerminals(let input) = request.input else { return }
+            guard case .getTerminals(let input) = request.input else {
+                emit(.getTerminals, EmptyPayload(), status: ErrorStatus.terminalsGeneric, send)
+                return
+            }
             do {
                 emit(.getTerminals, TerminalsPayload(terminals: try card.terminals(providerId: input.providerId)), send)
             } catch {
                 emit(.getTerminals, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.terminalsGeneric), send)
             }
         case .getCertificates:
-            guard case .getCertificates(let input) = request.input else { return }
+            guard case .getCertificates(let input) = request.input else {
+                emit(.getCertificates, EmptyPayload(), status: ErrorStatus.certificatesGeneric, send)
+                return
+            }
+            // Single-provider MVP simplification: multi-provider would need a session-tracked
+            // providerId. The real CardService must tolerate id 0 / empty providers without crashing.
             let providerId = card.providers().first?.id ?? 0
             do {
                 let certs = try card.certificates(providerId: providerId, terminalId: input.terminalId, pin: input.pin)

@@ -5,8 +5,12 @@ struct StubCardService: CardService {
     var terminalList: [Terminal] = []
     var certList: [Alias] = []
     var certError: CardError?
+    var terminalError: CardError?
     func providers() -> [Provider] { [Provider(id: 1, name: "MUP")] }
-    func terminals(providerId: Int) -> [Terminal] { terminalList }
+    func terminals(providerId: Int) throws -> [Terminal] {
+        if let e = terminalError { throw e }
+        return terminalList
+    }
     func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias] {
         if let e = certError { throw e }
         return certList
