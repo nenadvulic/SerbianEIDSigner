@@ -2,7 +2,16 @@ import XCTest
 @testable import SignerCore
 
 final class SignedXmlFlowTests: XCTestCase {
-    private let req = #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"b2","name":"Sig"},"pin":"1234","xml":"<doc><a>1</a></doc>"}}"#
+    private static func b64(_ s: String) -> String { Data(s.utf8).base64EncodedString() }
+    private func makeReq(_ rawXml: String) -> String {
+        #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"b2","name":"Sig"},"pin":"1234","xml":"\#(Self.b64(rawXml))"}}"#
+    }
+    private lazy var req = makeReq("<doc><a>1</a></doc>")
+
+    private func decodedPayload(_ j: [String: Any]) throws -> String {
+        let b = try XCTUnwrap(j["payload"] as? String)
+        return String(decoding: try XCTUnwrap(Data(base64Encoded: b), "payload not base64"), as: UTF8.self)
+    }
 
     private func run(_ stub: StubCardService, onThread: ((Bool) -> Void)? = nil) throws -> [String: Any] {
         let exp = expectation(description: "response")
@@ -18,7 +27,7 @@ final class SignedXmlFlowTests: XCTestCase {
         let j = try run(stub)
         XCTAssertEqual(j["operation"] as? String, "GET_SIGNED_XML")
         XCTAssertEqual(j["status"] as? Int, 0)
-        let xml = try XCTUnwrap(j["payload"] as? String)
+        let xml = try decodedPayload(j)
         XCTAssertTrue(xml.contains("<SignatureValue>\(stub.signBytes.base64EncodedString())</SignatureValue>"), xml)
         for uri in ["http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
                     "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256",
@@ -31,6 +40,30 @@ final class SignedXmlFlowTests: XCTestCase {
         XCTAssertTrue(xml.contains("<X509IssuerName>CN=Test Signature</X509IssuerName>"))
         XCTAssertTrue(xml.contains("<X509Certificate>\(PKCS15Fixtures.certSignature.base64EncodedString())</X509Certificate>"))
         XCTAssertTrue(xml.contains("<a>1</a>"))
+    }
+
+    func testRealPortalShapeBase64WithDeclarationAndNamespacedRoot() throws {
+        let raw = #"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:Root xmlns:ns2="urn:x"><a>1</a></ns2:Root>"#
+        let stub = StubCardService()
+        let exp = expectation(description: "r")
+        var out: Data?
+        Dispatcher(card: stub).handle(try JSONDecoder().decode(Request.self, from: Data(makeReq(raw).utf8))) { out = $0; exp.fulfill() }
+        wait(for: [exp], timeout: 5)
+        let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
+        XCTAssertEqual(j["status"] as? Int, 0)
+        let xml = try decodedPayload(j)
+        XCTAssertTrue(xml.contains("ns2:Root"), xml)
+        XCTAssertTrue(xml.contains("<SignatureValue>\(stub.signBytes.base64EncodedString())</SignatureValue>"), xml)
+    }
+
+    func testInvalidBase64IsGenericError() throws {
+        let bad = req.replacingOccurrences(of: Self.b64("<doc><a>1</a></doc>"), with: "!!notbase64!!")
+        let exp = expectation(description: "r")
+        var out: Data?
+        Dispatcher(card: StubCardService()).handle(try JSONDecoder().decode(Request.self, from: Data(bad.utf8))) { out = $0; exp.fulfill() }
+        wait(for: [exp], timeout: 5)
+        let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
+        XCTAssertEqual(j["status"] as? Int, 1500)
     }
 
     func testOneSigningOperationUsesOneCardSession() throws {
@@ -61,7 +94,7 @@ final class SignedXmlFlowTests: XCTestCase {
     func testMalformedXmlIsGenericError() throws {
         let exp = expectation(description: "r")
         var out: Data?
-        let bad = req.replacingOccurrences(of: "<doc><a>1</a></doc>", with: "<doc>")
+        let bad = makeReq("<doc>")
         Dispatcher(card: StubCardService()).handle(try JSONDecoder().decode(Request.self, from: Data(bad.utf8))) { out = $0; exp.fulfill() }
         wait(for: [exp], timeout: 5)
         let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])

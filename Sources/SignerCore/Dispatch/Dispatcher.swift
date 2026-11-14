@@ -134,15 +134,20 @@ public final class Dispatcher: MessageHandler {
     /// The GET_SIGNED_XML success payload. TODO(phase-2): confirm GET_SIGNED_XML payload shape (bare string vs
     /// {signedXml:...}) against a real SmartBox frame. Currently the signed XML is emitted as a bare JSON string;
     /// swapping the shape is a one-line change here (e.g. return SignedXmlPayload(signedXml: xml)).
-    private func signedXmlPayload(_ xml: String) -> some Codable { xml }
+    /// The real portal protocol is base64 both ways (input confirmed live; OUTPUT base64 is inferred/symmetric and
+    /// NOT yet confirmed live: flip here to `xml` if the portal expects the raw signed document).
+    private func signedXmlPayload(_ xml: String) -> some Codable { Data(xml.utf8).base64EncodedString() }
 
     private func signXml(_ input: GetSignedXmlInput, terminalId: Int, send: @escaping (Data) -> Void) {
         do {
+            // The portal sends the document base64-encoded; invalid base64 / non-UTF-8 -> generic sign error.
+            guard let raw = Data(base64Encoded: input.xml, options: .ignoreUnknownCharacters),
+                  let documentXML = String(data: raw, encoding: .utf8) else { throw CardError.generic }
             // One card session: cert + key FID resolved, one VERIFY, then sign (see CardService.withSigningKey).
             let xml = try card.withSigningKey(providerId: resolveProviderId(), terminalId: terminalId,
                                               alias: input.certificate, pin: input.pin) { der, sign in
                 let info = try CertificateInfo(der: der)
-                return try XMLDSigBuilder().build(documentXML: input.xml, certDER: der, issuer: info.issuer,
+                return try XMLDSigBuilder().build(documentXML: documentXML, certDER: der, issuer: info.issuer,
                                                   serial: info.serial, sign: sign)
             }
             emit(.getSignedXml, signedXmlPayload(xml), send)
