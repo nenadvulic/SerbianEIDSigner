@@ -1,0 +1,44 @@
+# Generate the Xcode project with: cd TokenApp && cp Local.xcconfig.example Local.xcconfig && xcodegen
+name: SerbianEIDSigner
+options:
+  bundleIdPrefix: rs.serbiandocuments
+  deploymentTarget:
+    macOS: "13.0"
+  developmentLanguage: en
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+settings:
+  base:
+    DEVELOPMENT_TEAM: "$(SEID_TEAM_ID)"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+    ARCHS: "$(ARCHS_STANDARD)"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: Apple Development
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+  configs:
+    Release:
+      ONLY_ACTIVE_ARCH: NO
+packages:
+  SerbianEIDSigner:
+    path: ..
+targets:
+  SerbianEIDSigner:
+    type: application
+    platform: macOS
+    sources:
+      - path: ../Sources/SignerApp
+      - path: App/Info.plist
+        buildPhase: none
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: rs.serbiandocuments.SerbianEIDSigner
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: SerbianEIDSigner
+        product: SignerCore
