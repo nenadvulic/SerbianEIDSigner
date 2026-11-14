@@ -102,7 +102,8 @@ public struct XMLDSigBuilder {
         let rc: Int32 = withUnsafeMutablePointer(to: &root) { p in
             let cb: xmlC14NIsVisibleCallback? = subtree == nil ? nil : { ud, node, parent in
                 guard let target = ud!.assumingMemoryBound(to: xmlNodePtr?.self).pointee else { return 1 }
-                // Namespace nodes are passed as xmlNs*; their owning element is `parent`.
+                // libxml2 passes `parent` = the element being processed. For a namespace node (an xmlNs*
+                // cast to xmlNodePtr) that is the element it is rendered on, so test visibility via it.
                 var cur: xmlNodePtr? = node
                 if node?.pointee.type == XML_NAMESPACE_DECL { cur = parent }
                 while let c = cur {
@@ -129,6 +130,7 @@ public struct XMLDSigBuilder {
 
     private static func parse(_ xml: String) throws -> xmlDocPtr {
         let bytes = Array(xml.utf8)
+        guard !bytes.isEmpty else { throw XMLDSigError.parseFailed }
         let opts = Int32(XML_PARSE_NONET.rawValue)
         let doc: xmlDocPtr? = bytes.withUnsafeBufferPointer { bp in
             bp.baseAddress!.withMemoryRebound(to: CChar.self, capacity: bytes.count) {
@@ -151,7 +153,8 @@ public struct XMLDSigBuilder {
         return node
     }
 
-    /// Big-endian unsigned bytes to decimal string.
+    /// Big-endian unsigned bytes to decimal string. The serial is treated as an unsigned big-endian
+    /// magnitude (valid per RFC 5280: certificate serial numbers are positive integers).
     static func decimal(_ bytes: Data) -> String {
         var num = Array(bytes)
         while num.first == 0 { num.removeFirst() }
