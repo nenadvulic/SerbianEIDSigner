@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartBox — Spike de capture du protocole (LOCAL, jetable)</title>
+<style>
+  :root { color-scheme: light dark; --b:#8884; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 920px; margin: 20px auto; padding: 0 16px; }
+  h1 { font-size: 20px; } h2 { font-size: 16px; margin: 18px 0 6px; }
+  .step { border: 1px solid var(--b); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+  .warn { border-color:#c90; background:#ffae0014; }
+  .muted { opacity:.75; font-size:13px; }
+  label { display:inline-block; min-width:150px; }
+  input, textarea { font: 13px ui-monospace, monospace; padding:6px 8px; border:1px solid var(--b); border-radius:6px; }
+  input[type=number]{ width:110px; } input[type=password]{ width:180px; }
+  textarea { width:100%; min-height:90px; box-sizing:border-box; }
+  button { font-size:14px; padding:8px 14px; border-radius:8px; cursor:pointer; margin:4px 4px 4px 0; }
+  #log { white-space:pre-wrap; font:12px/1.45 ui-monospace, monospace; background:#8881; border-radius:8px;
+         padding:12px; max-height:420px; overflow:auto; }
+  .send{color:#2563eb;} .recv{color:#1a7f37;} .err{color:#b00; font-weight:600;}
+  .pill{display:inline-block;background:#8882;border-radius:999px;padding:1px 9px;font-size:12px;}
+</style>
+</head>
+<body>
+  <h1>Spike — Capture du protocole SmartBox <span class="pill">LOCAL · jetable</span></h1>
+
+  <div class="step warn">
+    <strong>Confidentialité :</strong> cet outil parle uniquement à <code>ws://localhost</code> (SmartBox sur
+    ta machine). Ton <strong>PIN reste local</strong>, il n'est envoyé qu'au service SmartBox, exactement comme
+    le fait le portail. Rien ne part sur Internet. Utilise un <strong>XML de test bénin</strong> (pré-rempli) —
+    ne signe pas un vrai document fiscal. But : apprendre le format réel du protocole + obtenir une
+    <strong>signature SmartBox de référence</strong> (pour R2).
+  </div>
+
+  <div class="step">
+    <h2>1. Connexion</h2>
+    <button id="connect">Se connecter + GET_INFO + GET_PROVIDERS</button>
+    <span id="status" class="muted">non connecté</span>
+    <div class="muted">Ports essayés : 17165, 20806, 65097. Assure-toi que SmartBox tourne.</div>
+  </div>
+
+  <div class="step">
+    <h2>2. Terminaux (lecteurs)</h2>
+    <label>providerId</label><input id="providerId" type="number" value="0">
+    <button id="getTerminals" disabled>GET_TERMINALS</button>
+    <div class="muted">Lis la réponse de GET_PROVIDERS dans le log pour choisir le bon providerId.</div>
+  </div>
+
+  <div class="step">
+    <h2>3. Certificats (PIN requis)</h2>
+    <label>terminalId</label><input id="terminalId" type="number" value="0"><br>
+    <label>PIN (local)</label><input id="pin" type="password" autocomplete="off" placeholder="PIN du token"><br>
+    <button id="getCerts" disabled>GET_CERTIFICATES</button>
+    <div class="muted">⚠️ Un PIN faux répété verrouille le token (lockout PKCS#11 ~3 essais).</div>
+  </div>
+
+  <div class="step">
+    <h2>4. Signature de test</h2>
+    <label>certificate.alias</label><input id="alias" type="text" style="width:260px" placeholder="copié depuis GET_CERTIFICATES"><br>
+    <label>certificate.name</label><input id="cname" type="text" style="width:260px" placeholder="copié depuis GET_CERTIFICATES"><br>
+    <label style="vertical-align:top">xml (test bénin)</label>
+    <textarea id="xml">&lt;spikeTest xmlns="urn:serbianeidsigner:spike"&gt;protocol capture - not a tax filing&lt;/spikeTest&gt;</textarea>
+    <button id="signXml" disabled>GET_SIGNED_XML</button>
+  </div>
+
+  <div class="step">
+    <h2>Journal (tout est capturé verbatim)</h2>
+    <button id="download" disabled>Télécharger la capture (.json)</button>
+    <button id="clear">Effacer l'écran</button>
+    <div id="log">—</div>
+  </div>
+
+<script>
+const PORTS = [17165, 20806, 65097];
+const logEl = document.getElementById('status');
+const out = document.getElementById('log');
+let ws = null;
+const capture = []; // {t, dir, operation?, raw}
+
+function stamp(){ return new Date().toISOString(); }
+function render(){
+  out.innerHTML = capture.map(e => {
+    const cls = e.dir === 'send' ? 'send' : (e.dir === 'error' ? 'err' : 'recv');
+    const tag = e.dir === 'send' ? '→ SEND' : (e.dir === 'error' ? '✗' : '← RECV');
+    return `<span class="${cls}">[${e.t.slice(11,23)}] ${tag}${e.operation?(' '+e.operation):''}</span>\n${e.raw}`;
+  }).join('\n\n') || '—';
+  out.scrollTop = out.scrollHeight;
+}
+function logEvt(dir, raw, operation){ capture.push({t:stamp(), dir, operation, raw}); render();
+  document.getElementById('download').disabled = capture.length===0; }
+
+function send(obj){
+  if(!ws || ws.readyState!==1){ logEvt('error','WebSocket non connecté'); return; }
+  const raw = JSON.stringify(obj);
+  logEvt('send', JSON.stringify(obj,null,2), obj.operation);
+  ws.send(raw);
+}
+
+function enableSteps(on){
+  for(const id of ['getTerminals','getCerts','signXml']) document.getElementById(id).disabled = !on;
+}
+
+function tryConnect(i){
+  if(i>=PORTS.length){ logEl.textContent='aucun service trouvé'; logEvt('error','SmartBox introuvable sur '+PORTS.join(',')); return; }
+  const port = PORTS[i];
+  let ok=false;
+  const sock = new WebSocket('ws://localhost:'+port);
+  const to = setTimeout(()=>{ if(!ok){ try{sock.close();}catch{}; tryConnect(i+1); } }, 1500);
+  sock.onopen = ()=>{ ok=true; clearTimeout(to); ws=sock; logEl.textContent='connecté sur '+port;
+    logEvt('recv','(ouvert) origin='+(location.origin||'file://')+' port='+port);
+    enableSteps(true);
+    send({operation:'GET_INFO'});
+    setTimeout(()=>send({operation:'GET_PROVIDERS'}), 300);
+  };
+  sock.onmessage = (ev)=>{ let pretty=ev.data; try{ pretty=JSON.stringify(JSON.parse(ev.data),null,2);}catch{};
+    logEvt('recv', pretty); };
+  sock.onerror = ()=>{ /* handled by timeout */ };
+  sock.onclose = ()=>{ if(ws===sock){ logEl.textContent='déconnecté'; enableSteps(false);} };
+}
+
+document.getElementById('connect').onclick = ()=>{ tryConnect(0); };
+document.getElementById('getTerminals').onclick = ()=>
+  send({operation:'GET_TERMINALS', input:{ providerId: +document.getElementById('providerId').value }});
+document.getElementById('getCerts').onclick = ()=>
+  send({operation:'GET_CERTIFICATES', input:{ pin: document.getElementById('pin').value,
+        terminalId: +document.getElementById('terminalId').value }});
+document.getElementById('signXml').onclick = ()=>
+  send({operation:'GET_SIGNED_XML', input:{
+    certificate:{ alias: document.getElementById('alias').value, name: document.getElementById('cname').value },
+    pin: document.getElementById('pin').value,
+    xml: document.getElementById('xml').value }});
+
+document.getElementById('download').onclick = ()=>{
+  // Redact the PIN from the saved capture before download.
+  const safe = capture.map(e=>({...e, raw: e.raw.replace(/("pin"\s*:\s*)"[^"]*"/g, '$1"<REDACTED>"')}));
+  const blob = new Blob([JSON.stringify({tool:'smartbox-protocol-capture', when:stamp(), events:safe},null,2)],
+                        {type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='smartbox_capture_'+Date.now()+'.json'; a.click();
+};
+document.getElementById('clear').onclick = ()=>{ out.textContent='—'; };
+</script>
+</body>
+</html>
