@@ -74,8 +74,32 @@ public final class TKCardService: CardService {
         }
     }
 
+    /// Runs `body` on the card of `terminalId` inside one session (blocking card I/O).
+    private func withTransport<T>(providerId: Int, terminalId: Int, _ body: @escaping (APDUTransport) throws -> T) throws -> T {
+        guard providerId == Self.mupProvider.id else { throw CardError.middleware }
+        let slots = occupiedSlots()
+        guard slots.indices.contains(terminalId), let card = slots[terminalId].slot.makeSmartCard() else {
+            throw CardError.generic
+        }
+        let transport = SmartCardTransport(card: card)
+        do {
+            return try card.withSession { try body(transport) }
+        } catch let e as CardError {
+            throw e
+        } catch {
+            throw CardError.generic
+        }
+    }
+
+    public func signingCertificate(providerId: Int, terminalId: Int, alias: Alias, pin: Secret) throws -> Data {
+        try withTransport(providerId: providerId, terminalId: terminalId) {
+            try PKCS15.certificateDER(from: $0, pin: pin, alias: alias)
+        }
+    }
+
     public func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data {
-        // Placeholder: signing is implemented in Task 9.
-        throw CardError.generic
+        try withTransport(providerId: providerId, terminalId: terminalId) {
+            try PKCS15.sign(from: $0, pin: pin, alias: alias, sha256Digest: canonicalSignedInfoSHA256)
+        }
     }
 }

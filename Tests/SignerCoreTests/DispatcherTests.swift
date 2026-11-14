@@ -6,6 +6,10 @@ struct StubCardService: CardService {
     var certList: [Alias] = []
     var certError: CardError?
     var terminalError: CardError?
+    var signCertDER: Data = PKCS15Fixtures.certSignature
+    var signCertError: CardError?
+    var signBytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
+    var signError: CardError?
     func providers() -> [Provider] { [Provider(id: 1, name: "MUP")] }
     func terminals(providerId: Int) throws -> [Terminal] {
         if let e = terminalError { throw e }
@@ -15,7 +19,14 @@ struct StubCardService: CardService {
         if let e = certError { throw e }
         return certList
     }
-    func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data { Data() }
+    func signingCertificate(providerId: Int, terminalId: Int, alias: Alias, pin: Secret) throws -> Data {
+        if let e = signCertError { throw e }
+        return signCertDER
+    }
+    func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data {
+        if let e = signError { throw e }
+        return signBytes
+    }
 }
 
 final class DispatcherTests: XCTestCase {

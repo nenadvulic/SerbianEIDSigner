@@ -57,12 +57,6 @@ final class DispatcherCertsTests: XCTestCase {
         XCTAssertEqual(try run(stub, certsReq)["status"] as? Int, 1400)
     }
 
-    func testUnsupportedOperationReturnsError() throws {
-        let j = try run(StubCardService(), #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"a","name":"n"},"pin":"1","xml":"<a/>"}}"#)
-        XCTAssertEqual(j["status"] as? Int, 1000)
-        XCTAssertEqual(j["operation"] as? String, "GET_SIGNED_XML")
-    }
-
     func testTerminalErrorsMapToStatus() throws {
         var stub = StubCardService()
         stub.terminalError = .middleware

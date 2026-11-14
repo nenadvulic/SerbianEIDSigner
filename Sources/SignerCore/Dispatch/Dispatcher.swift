@@ -35,6 +35,7 @@ enum ErrorStatus {
     static let middleware = Status(1350)
     static let pinIncorrect = Status(1440)
     static let pinLocked = Status(1441)
+    static let signGeneric = Status(1500)
     static let unsupported = Status(1000)
 
     static func from(_ error: Error, generic: Status) -> Status {
@@ -50,6 +51,11 @@ enum ErrorStatus {
 public final class Dispatcher: MessageHandler {
     private let card: CardService
     private let encoder = JSONEncoder()
+    /// Card I/O is blocking (PIN prompt, APDUs): never run it on the NIO event loop.
+    private let cardQueue = DispatchQueue(label: "signer.card", qos: .userInitiated)
+    /// GET_SIGNED_XML carries no terminal id: use the one last used by GET_CERTIFICATES (default 0).
+    private let terminalLock = NSLock()
+    private var lastTerminalId = 0
 
     public init(card: CardService) { self.card = card }
 
@@ -88,14 +94,41 @@ public final class Dispatcher: MessageHandler {
             // Single-provider MVP simplification: multi-provider would need a session-tracked
             // providerId. The real CardService must tolerate id 0 / empty providers without crashing.
             let providerId = card.providers().first?.id ?? 0
+            terminalLock.lock(); lastTerminalId = input.terminalId; terminalLock.unlock()
             do {
                 let certs = try card.certificates(providerId: providerId, terminalId: input.terminalId, pin: input.pin)
                 emit(.getCertificates, CertificatesPayload(certificates: certs), send)
             } catch {
                 emit(.getCertificates, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.certificatesGeneric), send)
             }
+        case .getSignedXml:
+            guard case .getSignedXml(let input) = request.input else {
+                emit(.getSignedXml, EmptyPayload(), status: ErrorStatus.signGeneric, send)
+                return
+            }
+            terminalLock.lock(); let terminalId = lastTerminalId; terminalLock.unlock()
+            // `send` hops back onto the channel's event loop itself.
+            cardQueue.async { [self] in
+                signXml(input, terminalId: terminalId, send: send)
+            }
         default:
             emit(request.operation, EmptyPayload(), status: ErrorStatus.unsupported, send)
+        }
+    }
+
+    private func signXml(_ input: GetSignedXmlInput, terminalId: Int, send: @escaping (Data) -> Void) {
+        do {
+            let providerId = card.providers().first?.id ?? 0
+            let der = try card.signingCertificate(providerId: providerId, terminalId: terminalId,
+                                                  alias: input.certificate, pin: input.pin)
+            let info = try CertificateInfo(der: der)
+            let xml = try XMLDSigBuilder().build(documentXML: input.xml, certDER: der, issuer: info.issuer, serial: info.serial) {
+                try card.sign(providerId: providerId, terminalId: terminalId, alias: input.certificate,
+                              pin: input.pin, canonicalSignedInfoSHA256: $0)
+            }
+            emit(.getSignedXml, xml, send)
+        } catch {
+            emit(.getSignedXml, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.signGeneric), send)
         }
     }
 }
