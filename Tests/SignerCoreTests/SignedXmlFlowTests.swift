@@ -9,8 +9,10 @@ final class SignedXmlFlowTests: XCTestCase {
     private lazy var req = makeReq("<doc><a>1</a></doc>")
 
     private func decodedPayload(_ j: [String: Any]) throws -> String {
-        let b = try XCTUnwrap(j["payload"] as? String)
-        return String(decoding: try XCTUnwrap(Data(base64Encoded: b), "payload not base64"), as: UTF8.self)
+        // SmartBox wire shape: payload is an object {"xml": "<base64 of signed XML>"}.
+        let obj = try XCTUnwrap(j["payload"] as? [String: Any])
+        let b = try XCTUnwrap(obj["xml"] as? String)
+        return String(decoding: try XCTUnwrap(Data(base64Encoded: b), "payload.xml not base64"), as: UTF8.self)
     }
 
     private func run(_ stub: StubCardService, onThread: ((Bool) -> Void)? = nil) throws -> [String: Any] {
