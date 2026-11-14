@@ -40,6 +40,17 @@ struct CardCertificate {
 enum PKCS15 {
     static let appletAID: [UInt8] = [0xA0, 0x00, 0x00, 0x00, 0x63, 0x50, 0x4B, 0x43, 0x53, 0x2D, 0x31, 0x35]
 
+    // MARK: ATR
+
+    /// MUP eID ATR family. Only one ATR is known from the SerbianEIDToken reference (README, SmartCafe Expert 7):
+    /// 3BF99600008031FE45534345372047434E335E. ASSUMPTION: other MUP cards share the 3B F9 96 00 00 80 31 FE 45
+    /// prefix (T=1 interface bytes + "historical bytes" start); the checksum/tail is not compared.
+    static let mupATRPrefix: [UInt8] = [0x3B, 0xF9, 0x96, 0x00, 0x00, 0x80, 0x31, 0xFE, 0x45]
+
+    static func isMUPATR(_ atr: [UInt8]) -> Bool {
+        atr.starts(with: mupATRPrefix)
+    }
+
     // MARK: keyUsage
 
     /// True iff the certificate's keyUsage asserts nonRepudiation (the qualified signing certificate).
@@ -106,6 +117,11 @@ enum PKCS15 {
         } catch {
             throw CardError.generic
         }
+    }
+
+    /// Aliases of signing-capable (nonRepudiation) certificates only: the auth cert cannot make a qualified signature.
+    static func signingAliases(from transport: APDUTransport, pin: Secret) throws -> [Alias] {
+        try certificates(from: transport, pin: pin).filter { $0.isSigning }.map { $0.alias }
     }
 
     static func signingCertificate(from transport: APDUTransport, pin: Secret) throws -> (cert: Data, alias: Alias) {

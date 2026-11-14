@@ -31,7 +31,7 @@ public final class TKCardService: CardService {
 
     public init() {}
 
-    /// Slots with a card present, in `slotNames` order; terminal ids index into this list.
+    /// Slots holding a MUP card (ATR-gated), in `slotNames` order; terminal ids index into this list.
     private func occupiedSlots() -> [(name: String, slot: TKSmartCardSlot)] {
         guard let manager = TKSmartCardSlotManager.default else { return [] }
         var out: [(String, TKSmartCardSlot)] = []
@@ -40,7 +40,9 @@ public final class TKCardService: CardService {
             let done = DispatchSemaphore(value: 0)
             manager.getSlot(withName: name) { slot = $0; done.signal() }
             done.wait()
-            if let slot, slot.state == .validCard { out.append((name, slot)) }
+            if let slot, slot.state == .validCard, let atr = slot.atr, PKCS15.isMUPATR([UInt8](atr.bytes)) {
+                out.append((name, slot))
+            }
         }
         return out
     }
@@ -63,7 +65,7 @@ public final class TKCardService: CardService {
         let transport = SmartCardTransport(card: card)
         do {
             return try card.withSession {
-                try PKCS15.certificates(from: transport, pin: pin).map { $0.alias }
+                try PKCS15.signingAliases(from: transport, pin: pin)
             }
         } catch let e as CardError {
             throw e
