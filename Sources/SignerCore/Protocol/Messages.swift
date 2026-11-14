@@ -80,11 +80,14 @@ public final class Secret: Decodable, CustomStringConvertible, CustomDebugString
     public var debugDescription: String { "<redacted>" }
     public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
 
-    deinit {
-        storage.withUnsafeMutableBytes { buf in
-            for i in 0..<buf.count { buf[i] = 0 }
+    /// Zeroes in place via memset_s, which the optimizer is not allowed to elide.
+    static func zeroize(_ a: inout [UInt8]) {
+        a.withUnsafeMutableBytes { buf in
+            if let base = buf.baseAddress, buf.count > 0 { _ = memset_s(base, buf.count, 0, buf.count) }
         }
     }
+
+    deinit { Secret.zeroize(&storage) }
 }
 
 public struct Alias: Codable, Equatable, Sendable {
