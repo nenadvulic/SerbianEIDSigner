@@ -12,9 +12,17 @@ public struct Terminal: Codable, Equatable, Sendable {
     public init(id: Int, name: String) { self.id = id; self.name = name }
 }
 
+/// Card failures. Never retried by the dispatcher (a retry with a wrong PIN burns attempts).
+public enum CardError: Error, Equatable {
+    case pinIncorrect
+    case pinLocked
+    case middleware
+    case generic
+}
+
 public protocol CardService {
     func providers() -> [Provider]
-    func terminals(providerId: Int) -> [Terminal]
+    func terminals(providerId: Int) throws -> [Terminal]
     func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias]
     func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data
 }

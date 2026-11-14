@@ -2,9 +2,15 @@ import XCTest
 @testable import SignerCore
 
 struct StubCardService: CardService {
+    var terminalList: [Terminal] = []
+    var certList: [Alias] = []
+    var certError: CardError?
     func providers() -> [Provider] { [Provider(id: 1, name: "MUP")] }
-    func terminals(providerId: Int) -> [Terminal] { [] }
-    func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias] { [] }
+    func terminals(providerId: Int) -> [Terminal] { terminalList }
+    func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias] {
+        if let e = certError { throw e }
+        return certList
+    }
     func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data { Data() }
 }
 
