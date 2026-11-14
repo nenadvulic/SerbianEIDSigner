@@ -28,7 +28,7 @@ public final class WebSocketServer {
     private let originAllowlist: [String]
     private let handler: MessageHandler
     private var group: MultiThreadedEventLoopGroup?
-    private var channel: Channel?
+    private var channels: [Channel] = []
 
     public init(ports: [Int] = WebSocketServer.defaultPorts, originAllowlist: [String], handler: MessageHandler) {
         self.ports = ports
@@ -36,7 +36,10 @@ public final class WebSocketServer {
         self.handler = handler
     }
 
-    /// Binds 127.0.0.1 on the first free port of the list and returns it.
+    /// Binds both loopback addresses (127.0.0.1 and ::1) on the first port of the list that can be bound,
+    /// and returns it. The portal connects to `ws://localhost:PORT` and Chromium on macOS tries `::1` first.
+    /// A port is only taken when 127.0.0.1 AND ::1 both bind; if IPv6 loopback is unavailable on the host
+    /// (EADDRNOTAVAIL/EAFNOSUPPORT) the server degrades to IPv4-only rather than failing to start.
     public func start() throws -> Int {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let handler = self.handler
@@ -71,10 +74,21 @@ public final class WebSocketServer {
         var lastError: Error = IOError(errnoCode: EADDRINUSE, reason: "no ports configured")
         for port in ports {
             do {
-                let ch = try bootstrap.bind(host: "127.0.0.1", port: port).wait()
+                let v4 = try bootstrap.bind(host: "127.0.0.1", port: port).wait()
+                let boundPort = v4.localAddress?.port ?? port
+                do {
+                    let v6 = try bootstrap.bind(host: "::1", port: boundPort).wait()
+                    self.channels = [v4, v6]
+                } catch {
+                    if Self.isIPv6Unavailable(error) {
+                        self.channels = [v4]
+                    } else {
+                        try? v4.close().wait()
+                        throw error  // ::1 busy on this port: try next
+                    }
+                }
                 self.group = group
-                self.channel = ch
-                return ch.localAddress?.port ?? port
+                return boundPort
             } catch {
                 lastError = error  // address in use (or other bind failure): try next
             }
@@ -83,10 +97,15 @@ public final class WebSocketServer {
         throw lastError
     }
 
+    private static func isIPv6Unavailable(_ error: Error) -> Bool {
+        guard let io = error as? IOError else { return false }
+        return io.errnoCode == EADDRNOTAVAIL || io.errnoCode == EAFNOSUPPORT
+    }
+
     public func stop() {
-        try? channel?.close().wait()
+        for c in channels { try? c.close().wait() }
         try? group?.syncShutdownGracefully()
-        channel = nil
+        channels = []
         group = nil
     }
 }

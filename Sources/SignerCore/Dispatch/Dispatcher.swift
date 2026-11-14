@@ -93,7 +93,7 @@ public final class Dispatcher: MessageHandler {
             }
             onCardQueue { [self] in
                 do {
-                    emit(.getTerminals, TerminalsPayload(terminals: try card.terminals(providerId: input.providerId)), send)
+                    emit(.getTerminals, TerminalsPayload(terminals: try card.terminals(providerId: resolveProviderId())), send)
                 } catch {
                     emit(.getTerminals, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.terminalsGeneric), send)
                 }
@@ -108,8 +108,7 @@ public final class Dispatcher: MessageHandler {
             terminalLock.lock(); lastTerminalId = input.terminalId; terminalLock.unlock()
             onCardQueue { [self] in
                 do {
-                    let providerId = card.providers().first?.id ?? 0
-                    let certs = try card.certificates(providerId: providerId, terminalId: input.terminalId, pin: input.pin)
+                    let certs = try card.certificates(providerId: resolveProviderId(), terminalId: input.terminalId, pin: input.pin)
                     emit(.getCertificates, CertificatesPayload(certificates: certs), send)
                 } catch {
                     emit(.getCertificates, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.certificatesGeneric), send)
@@ -128,17 +127,25 @@ public final class Dispatcher: MessageHandler {
         }
     }
 
+    /// Single source of the provider id for every card call (single MUP provider today; a future
+    /// multi-provider change only touches this). Must be called on the card queue. Falls back to 0 when no card.
+    private func resolveProviderId() -> Int { card.providers().first?.id ?? 0 }
+
+    /// The GET_SIGNED_XML success payload. TODO(phase-2): confirm GET_SIGNED_XML payload shape (bare string vs
+    /// {signedXml:...}) against a real SmartBox frame. Currently the signed XML is emitted as a bare JSON string;
+    /// swapping the shape is a one-line change here (e.g. return SignedXmlPayload(signedXml: xml)).
+    private func signedXmlPayload(_ xml: String) -> some Codable { xml }
+
     private func signXml(_ input: GetSignedXmlInput, terminalId: Int, send: @escaping (Data) -> Void) {
         do {
-            let providerId = card.providers().first?.id ?? 0
-            let der = try card.signingCertificate(providerId: providerId, terminalId: terminalId,
-                                                  alias: input.certificate, pin: input.pin)
-            let info = try CertificateInfo(der: der)
-            let xml = try XMLDSigBuilder().build(documentXML: input.xml, certDER: der, issuer: info.issuer, serial: info.serial) {
-                try card.sign(providerId: providerId, terminalId: terminalId, alias: input.certificate,
-                              pin: input.pin, canonicalSignedInfoSHA256: $0)
+            // One card session: cert + key FID resolved, one VERIFY, then sign (see CardService.withSigningKey).
+            let xml = try card.withSigningKey(providerId: resolveProviderId(), terminalId: terminalId,
+                                              alias: input.certificate, pin: input.pin) { der, sign in
+                let info = try CertificateInfo(der: der)
+                return try XMLDSigBuilder().build(documentXML: input.xml, certDER: der, issuer: info.issuer,
+                                                  serial: info.serial, sign: sign)
             }
-            emit(.getSignedXml, xml, send)
+            emit(.getSignedXml, signedXmlPayload(xml), send)
         } catch {
             emit(.getSignedXml, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.signGeneric), send)
         }

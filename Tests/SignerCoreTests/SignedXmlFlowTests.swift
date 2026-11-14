@@ -33,6 +33,12 @@ final class SignedXmlFlowTests: XCTestCase {
         XCTAssertTrue(xml.contains("<a>1</a>"))
     }
 
+    func testOneSigningOperationUsesOneCardSession() throws {
+        let stub = StubCardService()
+        _ = try run(stub)
+        XCTAssertEqual(stub.sessionCount.value, 1)
+    }
+
     func testCardWorkRunsOffTheCallerThread() throws {
         var onMain: Bool?
         _ = try run(StubCardService(), onThread: { onMain = $0 })
@@ -79,6 +85,6 @@ final class SignedXmlFlowTests: XCTestCase {
         XCTAssertEqual(resp?["status"] as? Int, 0)
         XCTAssertEqual(Set(recorder.recorded), [1], "A signs only on its own terminal 1")
         _ = try respond(b, signReq)
-        XCTAssertEqual(recorder.recorded.suffix(2), [0, 0], "B signs on terminal 0")
+        XCTAssertEqual(recorder.recorded, [1, 0], "B signs on terminal 0")
     }
 }

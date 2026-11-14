@@ -91,15 +91,12 @@ public final class TKCardService: CardService {
         }
     }
 
-    public func signingCertificate(providerId: Int, terminalId: Int, alias: Alias, pin: Secret) throws -> Data {
-        try withTransport(providerId: providerId, terminalId: terminalId) {
-            try PKCS15.certificateDER(from: $0, pin: pin, alias: alias)
-        }
-    }
-
-    public func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data {
-        try withTransport(providerId: providerId, terminalId: terminalId) {
-            try PKCS15.sign(from: $0, pin: pin, alias: alias, sha256Digest: canonicalSignedInfoSHA256)
+    public func withSigningKey(providerId: Int, terminalId: Int, alias: Alias, pin: Secret,
+                               build: (_ certDER: Data, _ sign: (Data) throws -> Data) throws -> String) throws -> String {
+        try withoutActuallyEscaping(build) { build in
+            try withTransport(providerId: providerId, terminalId: terminalId) {
+                try PKCS15.withSigningKey(from: $0, pin: pin, alias: alias, build)
+            }
         }
     }
 }
