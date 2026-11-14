@@ -3,10 +3,8 @@ import XCTest
 
 final class DispatcherCertsTests: XCTestCase {
     private func run(_ stub: StubCardService, _ s: String) throws -> [String: Any] {
-        var out: Data?
         let r = try JSONDecoder().decode(Request.self, from: Data(s.utf8))
-        Dispatcher(card: stub).handle(r) { out = $0 }
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: respond(Dispatcher(card: stub), r).data) as? [String: Any])
     }
     private let terminalsReq = #"{"operation":"GET_TERMINALS","input":{"providerId":1}}"#
     private let certsReq = #"{"operation":"GET_CERTIFICATES","input":{"pin":"1234","terminalId":2}}"#
@@ -63,5 +61,12 @@ final class DispatcherCertsTests: XCTestCase {
         XCTAssertEqual(try run(stub, terminalsReq)["status"] as? Int, 1350)
         stub.terminalError = .generic
         XCTAssertEqual(try run(stub, terminalsReq)["status"] as? Int, 1300)
+    }
+
+    func testTerminalsAndCertificatesRunOffTheCallerThread() throws {
+        for s in [terminalsReq, certsReq] {
+            let r = try JSONDecoder().decode(Request.self, from: Data(s.utf8))
+            XCTAssertFalse(try respond(Dispatcher(card: StubCardService()), r).onMain, s)
+        }
     }
 }

@@ -36,7 +36,6 @@ enum ErrorStatus {
     static let pinIncorrect = Status(1440)
     static let pinLocked = Status(1441)
     static let signGeneric = Status(1500)
-    static let unsupported = Status(1000)
 
     static func from(_ error: Error, generic: Status) -> Status {
         switch error as? CardError {
@@ -51,13 +50,20 @@ enum ErrorStatus {
 public final class Dispatcher: MessageHandler {
     private let card: CardService
     private let encoder = JSONEncoder()
-    /// Card I/O is blocking (PIN prompt, APDUs): never run it on the NIO event loop.
-    private let cardQueue = DispatchQueue(label: "signer.card", qos: .userInitiated)
-    /// GET_SIGNED_XML carries no terminal id: use the one last used by GET_CERTIFICATES (default 0).
+    /// Card I/O is blocking (PIN prompt, APDUs): never run it on the NIO event loop. One serial queue
+    /// for all connections also serializes access to the single card.
+    private static let cardQueue = DispatchQueue(label: "signer.card", qos: .userInitiated)
+    /// GET_SIGNED_XML carries no terminal id: use the one last used by GET_CERTIFICATES on THIS
+    /// connection (default 0). Instances are per connection (see makeConnectionHandler).
     private let terminalLock = NSLock()
     private var lastTerminalId = 0
 
     public init(card: CardService) { self.card = card }
+
+    /// Each connection gets its own Dispatcher so `lastTerminalId` is never shared across clients.
+    public func makeConnectionHandler() -> MessageHandler { Dispatcher(card: card) }
+
+    private func onCardQueue(_ work: @escaping () -> Void) { Self.cardQueue.async(execute: work) }
 
     private func emit<P: Codable>(_ op: Operation, _ payload: P, status: Status = .ok, _ send: (Data) -> Void) {
         if let data = try? encoder.encode(Envelope(operation: op, status: status, payload: payload)) {
@@ -72,19 +78,25 @@ public final class Dispatcher: MessageHandler {
 
     public func handle(_ request: Request, send: @escaping (Data) -> Void) {
         switch request.operation {
+        case .onOpenEvent:
+            break  // server-originated event; a client sending it gets no reply
         case .getInfo:
             emit(.getInfo, EmptyPayload(), send)
         case .getProviders:
-            emit(.getProviders, ProvidersPayload(providers: card.providers()), send)
+            onCardQueue { [self] in
+                emit(.getProviders, ProvidersPayload(providers: card.providers()), send)
+            }
         case .getTerminals:
             guard case .getTerminals(let input) = request.input else {
                 emit(.getTerminals, EmptyPayload(), status: ErrorStatus.terminalsGeneric, send)
                 return
             }
-            do {
-                emit(.getTerminals, TerminalsPayload(terminals: try card.terminals(providerId: input.providerId)), send)
-            } catch {
-                emit(.getTerminals, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.terminalsGeneric), send)
+            onCardQueue { [self] in
+                do {
+                    emit(.getTerminals, TerminalsPayload(terminals: try card.terminals(providerId: input.providerId)), send)
+                } catch {
+                    emit(.getTerminals, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.terminalsGeneric), send)
+                }
             }
         case .getCertificates:
             guard case .getCertificates(let input) = request.input else {
@@ -93,13 +105,15 @@ public final class Dispatcher: MessageHandler {
             }
             // Single-provider MVP simplification: multi-provider would need a session-tracked
             // providerId. The real CardService must tolerate id 0 / empty providers without crashing.
-            let providerId = card.providers().first?.id ?? 0
             terminalLock.lock(); lastTerminalId = input.terminalId; terminalLock.unlock()
-            do {
-                let certs = try card.certificates(providerId: providerId, terminalId: input.terminalId, pin: input.pin)
-                emit(.getCertificates, CertificatesPayload(certificates: certs), send)
-            } catch {
-                emit(.getCertificates, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.certificatesGeneric), send)
+            onCardQueue { [self] in
+                do {
+                    let providerId = card.providers().first?.id ?? 0
+                    let certs = try card.certificates(providerId: providerId, terminalId: input.terminalId, pin: input.pin)
+                    emit(.getCertificates, CertificatesPayload(certificates: certs), send)
+                } catch {
+                    emit(.getCertificates, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.certificatesGeneric), send)
+                }
             }
         case .getSignedXml:
             guard case .getSignedXml(let input) = request.input else {
@@ -108,11 +122,9 @@ public final class Dispatcher: MessageHandler {
             }
             terminalLock.lock(); let terminalId = lastTerminalId; terminalLock.unlock()
             // `send` hops back onto the channel's event loop itself.
-            cardQueue.async { [self] in
+            onCardQueue { [self] in
                 signXml(input, terminalId: terminalId, send: send)
             }
-        default:
-            emit(request.operation, EmptyPayload(), status: ErrorStatus.unsupported, send)
         }
     }
 
