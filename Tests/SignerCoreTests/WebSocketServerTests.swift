@@ -8,6 +8,11 @@ private final class OpenHandler: MessageHandler {
     func handle(_ request: Request, send: @escaping (Data) -> Void) {}
 }
 
+private final class ReplyHandler: MessageHandler {
+    func onOpen(send: @escaping (Data) -> Void) {}
+    func handle(_ request: Request, send: @escaping (Data) -> Void) { send(Data("REPLY_OK".utf8)) }
+}
+
 final class WebSocketServerTests: XCTestCase {
     private func freePort() throws -> Int {
         let g = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -68,5 +73,27 @@ final class WebSocketServerTests: XCTestCase {
         try await assertOnOpen(host: "localhost", port: port)
         try await assertOnOpen(host: "127.0.0.1", port: port)
         try await assertOnOpen(host: "[::1]", port: port)
+    }
+
+    /// Real (masking) client -> server request must round-trip to a response. Regression: server used masked payload.
+    func testMaskedClientMessageRoundTripsToServerResponse() async throws {
+        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: ReplyHandler())
+        let port = try server.start()
+        defer { server.stop() }
+
+        var req = URLRequest(url: URL(string: "ws://127.0.0.1:\(port)")!)
+        req.setValue("https://eporezi.purs.gov.rs", forHTTPHeaderField: "Origin")
+        req.timeoutInterval = 5
+        let t = URLSession.shared.webSocketTask(with: req)
+        t.resume()
+        defer { t.cancel(with: .goingAway, reason: nil) }
+
+        try await t.send(.string(#"{"operation":"GET_PROVIDERS"}"#))
+        // Watchdog: closing the task makes a pending receive() throw, so a missing reply fails fast instead of hanging.
+        let watchdog = Task { try await Task.sleep(nanoseconds: 5_000_000_000); t.cancel(with: .goingAway, reason: nil) }
+        defer { watchdog.cancel() }
+        let reply = try await t.receive()
+        guard case .string(let s) = reply else { return XCTFail("expected text") }
+        XCTAssertEqual(s, "REPLY_OK")
     }
 }
