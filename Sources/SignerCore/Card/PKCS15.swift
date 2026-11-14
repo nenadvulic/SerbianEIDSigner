@@ -35,6 +35,8 @@ struct CardCertificate {
     let der: Data
     let alias: Alias
     let isSigning: Bool
+    /// File id of the matching private key (from the class-2 key object with the same id), if the card has one.
+    let privateKeyFID: [UInt8]?
 }
 
 enum PKCS15 {
@@ -131,6 +133,42 @@ enum PKCS15 {
         return (c.der, c.alias)
     }
 
+    /// DER of the certificate with this alias. VERIFY once, no retry.
+    static func certificateDER(from transport: APDUTransport, pin: Secret, alias: Alias) throws -> Data {
+        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias == alias }) else {
+            throw CardError.generic
+        }
+        return c.der
+    }
+
+    /// SHA-256 AlgorithmIdentifier + OCTET STRING header of a DigestInfo (RFC 8017 section 9.2).
+    static let sha256DigestInfoPrefix: [UInt8] = [
+        0x30, 0x31, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
+    ]
+
+    /// On-card RSASSA-PKCS1-v1_5 over a SHA-256 digest: VERIFY (once), MSE SET (key FID, algorithm 02 = the card
+    /// pads the DigestInfo), PSO COMPUTE DIGITAL SIGNATURE. Approach from SerbianEIDToken (MIT).
+    /// Only the nonRepudiation (qualified signature) certificate's key is used.
+    static func sign(from transport: APDUTransport, pin: Secret, alias: Alias, sha256Digest: Data) throws -> Data {
+        guard sha256Digest.count == 32 else { throw CardError.generic }
+        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias == alias }),
+              c.isSigning, let keyFID = c.privateKeyFID, keyFID.count == 2 else {
+            throw CardError.generic
+        }
+        let digestInfo = sha256DigestInfoPrefix + [UInt8](sha256Digest)
+        do {
+            let mse = try transport.transmit(APDU(ins: 0x22, p1: 0x41, p2: 0xB6, data: [0x80, 0x01, 0x02, 0x84, 0x02] + keyFID))
+            guard mse.isOK else { throw CardError.generic }
+            let pso = try transport.transmit(APDU(ins: 0x2A, p1: 0x9E, p2: 0x00, data: digestInfo, le: 256))
+            guard pso.isOK, !pso.data.isEmpty else { throw CardError.generic }
+            return Data(pso.data)
+        } catch let e as CardError {
+            throw e
+        } catch {
+            throw CardError.generic
+        }
+    }
+
     /// Certificate file: 6 bytes header, zlib stream (2-byte header, raw deflate, Adler-32).
     static func decodeCertificateFile(_ f: [UInt8]) throws -> Data {
         guard f.count > 6 + 2 + 4 else { throw APDUError.malformed("certificate file too short") }
@@ -196,6 +234,12 @@ enum PKCS15 {
             return out
         }
 
+        /// Public key file: 00 05, 1 byte, private key FID (2), then length-prefixed modulus and exponent.
+        private func privateKeyFID(inPublicKeyFile f: [UInt8]) -> [UInt8]? {
+            guard f.count >= 7, f[0] == 0x00, f[1] == 0x05 else { return nil }
+            return [f[3], f[4]]
+        }
+
         /// Directory file 8FFF: entry count (LE16) then 2-byte FIDs stored low byte first. Each entry is a meta
         /// file: class(1) fileName(2) labelLen(1) label idLen(1)=20 id. Class 1 = certificate.
         func discoverCertificates() throws -> [CardCertificate] {
@@ -203,27 +247,35 @@ enum PKCS15 {
             guard index.count >= 2 else { throw APDUError.malformed("index too short") }
             let count = Int(index[0]) | Int(index[1]) << 8
             guard index.count >= 2 + count * 2 else { throw APDUError.malformed("index truncated") }
-            var out: [CardCertificate] = []
+            var certs: [(id: [UInt8], label: String, der: Data)] = []
+            var keyFIDs: [[UInt8]: [UInt8]] = [:]
             for i in 0..<count {
                 let fid = [index[3 + i * 2], index[2 + i * 2]]
                 do {
                     let m = try readFile(fid)
-                    guard m.count >= 4, m[0] == 1 else { continue }  // certificates only
+                    guard m.count >= 4, m[0] == 1 || m[0] == 2 else { continue }  // certificates and keys only
                     let file = Array(m[1..<3])
                     let labelLen = Int(m[3])
                     guard m.count >= 5 + labelLen + 20, m[4 + labelLen] == 20 else { continue }
                     let label = String(bytes: m[4..<4 + labelLen], encoding: .utf8) ?? ""
-                    let id = m[5 + labelLen..<5 + labelLen + 20]
-                    let der = try PKCS15.decodeCertificateFile(try readFile(file))
-                    out.append(CardCertificate(
-                        der: der,
-                        alias: Alias(alias: id.map { String(format: "%02X", $0) }.joined(),
-                                     name: label.isEmpty ? "Certificate" : label),
-                        isSigning: PKCS15.isSigningCert(der)))
+                    let id = Array(m[5 + labelLen..<5 + labelLen + 20])
+                    if m[0] == 1 {
+                        certs.append((id, label, try PKCS15.decodeCertificateFile(try readFile(file))))
+                    } else if let fid = privateKeyFID(inPublicKeyFile: try readFile(file)) {
+                        keyFIDs[id] = fid
+                    }
                 } catch let e as APDUError {
                     if case .transport = e { throw e }
                     continue  // corrupt or unreadable object: keep the others
                 }
+            }
+            let out = certs.map { c in
+                CardCertificate(
+                    der: c.der,
+                    alias: Alias(alias: c.id.map { String(format: "%02X", $0) }.joined(),
+                                 name: c.label.isEmpty ? "Certificate" : c.label),
+                    isSigning: PKCS15.isSigningCert(c.der),
+                    privateKeyFID: keyFIDs[c.id])
             }
             return out
         }

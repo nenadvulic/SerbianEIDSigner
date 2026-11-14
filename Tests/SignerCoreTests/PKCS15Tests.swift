@@ -26,6 +26,10 @@ private final class FileCard: APDUTransport {
             return APDUResponse(data: Array(f[off..<min(f.count, off + (apdu.le ?? 256))]), sw: 0x9000)
         case 0x20:
             return APDUResponse(data: [], sw: verifySW)
+        case 0x22:
+            return APDUResponse(data: [], sw: 0x9000)
+        case 0x2A:
+            return APDUResponse(data: [UInt8](repeating: 0xCD, count: 256), sw: 0x9000)
         default:
             return APDUResponse(data: [], sw: 0x6D00)
         }
@@ -131,5 +135,63 @@ final class PKCS15Tests: XCTestCase {
         XCTAssertTrue(PKCS15.isMUPATR(known))
         XCTAssertFalse(PKCS15.isMUPATR([0x3B, 0x8F, 0x80, 0x01]))
         XCTAssertFalse(PKCS15.isMUPATR([]))
+    }
+
+    // MARK: signing
+
+    private func makeSigningCard() -> FileCard {
+        let card = makeCard()
+        card.files[[0x8F, 0xFF]] = [3, 0, 0x01, 0x70, 0x02, 0x70, 0x03, 0x70]
+        card.files[[0x70, 0x03]] = meta(2, file: [0x72, 0x03], label: "SigKey", id: 0xB2)
+        // public key file: 00 05 xx, private key FID 60 05, len-prefixed modulus and exponent
+        card.files[[0x72, 0x03]] = [0x00, 0x05, 0x00, 0x60, 0x05, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x03, 0x01, 0x00, 0x01]
+        return card
+    }
+
+    func testSignSendsVerifyThenMSEThenPSOWithSHA256DigestInfo() throws {
+        let card = makeSigningCard()
+        let digest = Data((0..<32).map { UInt8($0) })
+        let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
+        let sig = try PKCS15.sign(from: card, pin: Secret(bytes: Array("1234".utf8)), alias: alias, sha256Digest: digest)
+        XCTAssertEqual(sig, Data(repeating: 0xCD, count: 256))
+        XCTAssertEqual(card.sent.filter { $0.ins == 0x20 }.count, 1)
+        let mse = try XCTUnwrap(card.sent.first { $0.ins == 0x22 })
+        XCTAssertEqual(mse.data, [0x80, 0x01, 0x02, 0x84, 0x02, 0x60, 0x05])
+        let pso = try XCTUnwrap(card.sent.first { $0.ins == 0x2A })
+        let prefix: [UInt8] = [0x30, 0x31, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20]
+        XCTAssertEqual([pso.p1, pso.p2], [0x9E, 0x00])
+        XCTAssertEqual(pso.data, prefix + [UInt8](digest))
+        let order = card.sent.map { $0.ins }.filter { [0x20, 0x22, 0x2A].contains($0) }
+        XCTAssertEqual(order, [0x20, 0x22, 0x2A])
+    }
+
+    func testSignRejectsBadDigestUnknownAliasAndAuthCert() {
+        let pin = Secret(bytes: Array("1234".utf8))
+        let good = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
+        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: good, sha256Digest: Data([1, 2])))
+        let unknown = Alias(alias: "00", name: "x")
+        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: unknown, sha256Digest: Data(count: 32))) {
+            XCTAssertEqual($0 as? CardError, .generic)
+        }
+        let auth = Alias(alias: String(repeating: "A1", count: 20), name: "Auth")
+        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: auth, sha256Digest: Data(count: 32))) {
+            XCTAssertEqual($0 as? CardError, .generic)
+        }
+    }
+
+    func testSignWrongPINNeverReachesSigning() {
+        let card = makeSigningCard()
+        card.verifySW = 0x63C2
+        let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
+        XCTAssertThrowsError(try PKCS15.sign(from: card, pin: Secret(bytes: Array("1234".utf8)), alias: alias, sha256Digest: Data(count: 32))) {
+            XCTAssertEqual($0 as? CardError, .pinIncorrect)
+        }
+        XCTAssertFalse(card.sent.contains { $0.ins == 0x22 || $0.ins == 0x2A })
+    }
+
+    func testCertificateDERByAlias() throws {
+        let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
+        let der = try PKCS15.certificateDER(from: makeSigningCard(), pin: Secret(bytes: Array("1234".utf8)), alias: alias)
+        XCTAssertEqual(der, PKCS15Fixtures.certSignature)
     }
 }

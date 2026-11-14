@@ -24,5 +24,7 @@ public protocol CardService {
     func providers() -> [Provider]
     func terminals(providerId: Int) throws -> [Terminal]
     func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias]
+    /// DER of the certificate with this alias (needed for KeyInfo and the issuer/serial of the signature).
+    func signingCertificate(providerId: Int, terminalId: Int, alias: Alias, pin: Secret) throws -> Data
     func sign(providerId: Int, terminalId: Int, alias: Alias, pin: Secret, canonicalSignedInfoSHA256: Data) throws -> Data
 }
