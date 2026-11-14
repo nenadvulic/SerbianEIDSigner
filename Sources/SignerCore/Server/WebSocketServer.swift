@@ -156,13 +156,15 @@ private final class WebSocketFrameHandler: ChannelInboundHandler {
         var frame = unwrapInboundIn(data)
         switch frame.opcode {
         case .text:
-            buffer.clear(); buffer.writeBuffer(&frame.data); assembling = !frame.fin
+            var payload = frame.unmaskedData
+            buffer.clear(); buffer.writeBuffer(&payload); assembling = !frame.fin
             if frame.fin { dispatch(context) }
         case .continuation where assembling:
-            buffer.writeBuffer(&frame.data); assembling = !frame.fin
+            var payload = frame.unmaskedData
+            buffer.writeBuffer(&payload); assembling = !frame.fin
             if frame.fin { dispatch(context) }
         case .ping:
-            context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .pong, data: frame.data)), promise: nil)
+            context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .pong, data: frame.unmaskedData)), promise: nil)
         case .connectionClose:
             context.writeAndFlush(wrapOutboundOut(WebSocketFrame(fin: true, opcode: .connectionClose, data: context.channel.allocator.buffer(capacity: 0)))).whenComplete { _ in
                 context.close(promise: nil)
