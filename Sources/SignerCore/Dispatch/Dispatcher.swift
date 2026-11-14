@@ -136,7 +136,9 @@ public final class Dispatcher: MessageHandler {
     /// swapping the shape is a one-line change here (e.g. return SignedXmlPayload(signedXml: xml)).
     /// The real portal protocol is base64 both ways (input confirmed live; OUTPUT base64 is inferred/symmetric and
     /// NOT yet confirmed live: flip here to `xml` if the portal expects the raw signed document).
-    private func signedXmlPayload(_ xml: String) -> some Codable { Data(xml.utf8).base64EncodedString() }
+    private struct SignedXmlPayload: Codable { let xml: String }
+    // SmartBox wire shape (from decompiled jar): payload = {"xml": "<base64 of signed XML>"}.
+    private func signedXmlPayload(_ xml: String) -> some Codable { SignedXmlPayload(xml: Data(xml.utf8).base64EncodedString()) }
 
     private func signXml(_ input: GetSignedXmlInput, terminalId: Int, send: @escaping (Data) -> Void) {
         do {
