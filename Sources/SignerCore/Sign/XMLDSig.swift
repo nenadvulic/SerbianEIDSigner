@@ -8,8 +8,6 @@ public enum XMLDSigError: Error {
     case signatureElementMissing
 }
 
-/// Builds an enveloped XMLDSig signature (C14N 1.0 inclusive, RSA-SHA256, SHA-256 digest).
-/// The RSA operation is delegated to the `sign` closure.
 public struct XMLDSigBuilder {
     static let dsigNS = "http://www.w3.org/2000/09/xmldsig#"
     static let c14nURI = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
@@ -19,15 +17,12 @@ public struct XMLDSigBuilder {
 
     public init() {}
 
-    /// `sign` receives the SHA-256 digest of the canonical SignedInfo and returns the complete
-    /// RSASSA-PKCS1-v1_5 signature bytes.
     public func build(documentXML: String, certDER: Data, issuer: String, serial: Data,
-                      sign: (Data) throws -> Data) throws -> String {
+                      subject: String = "", sign: (Data) throws -> Data) throws -> String {
         let doc = try Self.parse(documentXML)
         defer { xmlFreeDoc(doc) }
         guard let root = xmlDocGetRootElement(doc) else { throw XMLDSigError.parseFailed }
 
-        // Enveloped transform: digest of the document before the Signature is appended.
         let docDigest = Data(SHA256.hash(data: try Self.c14n(doc: doc, visibleUnder: nil)))
 
         let sig = Self.element("Signature", parent: root, ns: nil, declareNS: Self.dsigNS)
@@ -46,17 +41,17 @@ public struct XMLDSigBuilder {
         xmlSetProp(dm, "Algorithm", Self.digestMethodURI)
         _ = Self.element("DigestValue", parent: ref, ns: ns, text: docDigest.base64EncodedString())
 
-        // SignedInfo canonicalized in its final context (inherits Signature's xmlns).
         let siDigest = Data(SHA256.hash(data: try Self.c14n(doc: doc, visibleUnder: signedInfo)))
         let sigBytes = try sign(siDigest)
         _ = Self.element("SignatureValue", parent: sig, ns: ns, text: sigBytes.base64EncodedString())
 
         let keyInfo = Self.element("KeyInfo", parent: sig, ns: ns)
         let x509 = Self.element("X509Data", parent: keyInfo, ns: ns)
+        _ = Self.element("X509Certificate", parent: x509, ns: ns, text: certDER.base64EncodedString())
         let isr = Self.element("X509IssuerSerial", parent: x509, ns: ns)
         _ = Self.element("X509IssuerName", parent: isr, ns: ns, text: issuer)
         _ = Self.element("X509SerialNumber", parent: isr, ns: ns, text: Self.decimal(serial))
-        _ = Self.element("X509Certificate", parent: x509, ns: ns, text: certDER.base64EncodedString())
+        if !subject.isEmpty { _ = Self.element("X509SubjectName", parent: x509, ns: ns, text: subject) }
 
         var buf: UnsafeMutablePointer<xmlChar>?
         var size: Int32 = 0
@@ -66,16 +61,12 @@ public struct XMLDSigBuilder {
         return String(decoding: UnsafeBufferPointer(start: b, count: Int(size)), as: UTF8.self)
     }
 
-    // MARK: - Canonicalization
-
-    /// Inclusive C14N 1.0 (no comments) of a whole document.
     static func canonicalize(xml: String) throws -> Data {
         let doc = try parse(xml)
         defer { xmlFreeDoc(doc) }
         return try c14n(doc: doc, visibleUnder: nil)
     }
 
-    /// Inclusive C14N of the first `SignedInfo` element of an already signed document.
     static func canonicalizeSignedInfo(inSignedXML xml: String) throws -> Data {
         let doc = try parse(xml)
         defer { xmlFreeDoc(doc) }
@@ -102,8 +93,7 @@ public struct XMLDSigBuilder {
         let rc: Int32 = withUnsafeMutablePointer(to: &root) { p in
             let cb: xmlC14NIsVisibleCallback? = subtree == nil ? nil : { ud, node, parent in
                 guard let target = ud!.assumingMemoryBound(to: xmlNodePtr?.self).pointee else { return 1 }
-                // libxml2 passes `parent` = the element being processed. For a namespace node (an xmlNs*
-                // cast to xmlNodePtr) that is the element it is rendered on, so test visibility via it.
+
                 var cur: xmlNodePtr? = node
                 if node?.pointee.type == XML_NAMESPACE_DECL { cur = parent }
                 while let c = cur {
@@ -125,8 +115,6 @@ public struct XMLDSigBuilder {
         xmlOutputBufferClose(out)
         return data
     }
-
-    // MARK: - Helpers
 
     private static func parse(_ xml: String) throws -> xmlDocPtr {
         let bytes = Array(xml.utf8)
@@ -153,8 +141,6 @@ public struct XMLDSigBuilder {
         return node
     }
 
-    /// Big-endian unsigned bytes to decimal string. The serial is treated as an unsigned big-endian
-    /// magnitude (valid per RFC 5280: certificate serial numbers are positive integers).
     static func decimal(_ bytes: Data) -> String {
         var num = Array(bytes)
         while num.first == 0 { num.removeFirst() }

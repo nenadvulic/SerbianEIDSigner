@@ -1,6 +1,3 @@
-// PKCS#15 / MUP eID card file access over an abstract APDU transport.
-// APDU encoding, SELECT/READ BINARY strategy, directory/meta/certificate file formats, VERIFY and the
-// keyUsage walk are adapted from SerbianEIDToken (MIT, (c) 2026 Nenad VULIC).
 import Foundation
 import Compression
 
@@ -30,38 +27,28 @@ enum APDUError: Error, Equatable {
     case transport(String)
 }
 
-/// A certificate found on the card.
 struct CardCertificate {
     let der: Data
     let alias: Alias
     let isSigning: Bool
-    /// File id of the matching private key (from the class-2 key object with the same id), if the card has one.
+
     let privateKeyFID: [UInt8]?
 }
 
 enum PKCS15 {
     static let appletAID: [UInt8] = [0xA0, 0x00, 0x00, 0x00, 0x63, 0x50, 0x4B, 0x43, 0x53, 0x2D, 0x31, 0x35]
 
-    // MARK: ATR
-
-    /// MUP eID ATR family. Only one ATR is known from the SerbianEIDToken reference (README, SmartCafe Expert 7):
-    /// 3BF99600008031FE45534345372047434E335E. ASSUMPTION: other MUP cards share the 3B F9 96 00 00 80 31 FE 45
-    /// prefix (T=1 interface bytes + "historical bytes" start); the checksum/tail is not compared.
     static let mupATRPrefix: [UInt8] = [0x3B, 0xF9, 0x96, 0x00, 0x00, 0x80, 0x31, 0xFE, 0x45]
 
     static func isMUPATR(_ atr: [UInt8]) -> Bool {
         atr.starts(with: mupATRPrefix)
     }
 
-    // MARK: keyUsage
-
-    /// True iff the certificate's keyUsage asserts nonRepudiation (the qualified signing certificate).
     static func isSigningCert(_ der: Data) -> Bool {
         guard let bits = keyUsageByte(der) else { return false }
         return bits & 0x40 != 0
     }
 
-    /// First byte of the keyUsage BIT STRING (bit 0 = 0x80), found by walking the extension.
     private static func keyUsageByte(_ der: Data) -> UInt8? {
         let b = [UInt8](der)
         let oid: [UInt8] = [0x06, 0x03, 0x55, 0x1D, 0x0F]
@@ -94,13 +81,9 @@ enum PKCS15 {
         return b[bitString.start + 1]
     }
 
-    // MARK: card access
-
-    /// Selects the applet, verifies the PIN (exactly one VERIFY, never retried), then lists all certificates.
     static func certificates(from transport: APDUTransport, pin: Secret) throws -> [CardCertificate] {
         do {
-            // NOTE: `pin.bytes` shares Secret's copy-on-write buffer, so zeroizing `digits` wipes (and detaches)
-            // this copy only; the real `Secret.storage` bytes are cleared in Secret.deinit, not here.
+
             var digits = pin.bytes
             defer { Secret.zeroize(&digits) }
             guard (4...8).contains(digits.count), digits.allSatisfy({ (0x30...0x39).contains($0) }) else {
@@ -124,7 +107,6 @@ enum PKCS15 {
         }
     }
 
-    /// Aliases of signing-capable (nonRepudiation) certificates only: the auth cert cannot make a qualified signature.
     static func signingAliases(from transport: APDUTransport, pin: Secret) throws -> [Alias] {
         try certificates(from: transport, pin: pin).filter { $0.isSigning }.map { $0.alias }
     }
@@ -136,27 +118,20 @@ enum PKCS15 {
         return (c.der, c.alias)
     }
 
-    /// DER of the certificate with this alias. VERIFY once, no retry.
     static func certificateDER(from transport: APDUTransport, pin: Secret, alias: Alias) throws -> Data {
-        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias == alias }) else {
+        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias.alias == alias.alias }) else {
             throw CardError.generic
         }
         return c.der
     }
 
-    /// SHA-256 AlgorithmIdentifier + OCTET STRING header of a DigestInfo (RFC 8017 section 9.2).
     static let sha256DigestInfoPrefix: [UInt8] = [
         0x30, 0x31, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
     ]
 
-    /// One card session for a whole signing operation: VERIFY once (never retried), enumerate certificates once,
-    /// resolve the signing certificate's DER and private-key FID, then hand `body` the DER plus a `sign`
-    /// closure (on-card RSASSA-PKCS1-v1_5 over a SHA-256 digest: MSE SET with algorithm 02 = the card pads the
-    /// DigestInfo, then PSO COMPUTE DIGITAL SIGNATURE). Only a nonRepudiation certificate's key is used.
-    /// Approach from SerbianEIDToken (MIT).
     static func withSigningKey<T>(from transport: APDUTransport, pin: Secret, alias: Alias,
                                   _ body: (_ certDER: Data, _ sign: (Data) throws -> Data) throws -> T) throws -> T {
-        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias == alias }),
+        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias.alias == alias.alias }),
               c.isSigning, let keyFID = c.privateKeyFID, keyFID.count == 2 else {
             throw CardError.generic
         }
@@ -178,13 +153,11 @@ enum PKCS15 {
         return try body(c.der, sign)
     }
 
-    /// Convenience over `withSigningKey` for a single digest.
     static func sign(from transport: APDUTransport, pin: Secret, alias: Alias, sha256Digest: Data) throws -> Data {
         guard sha256Digest.count == 32 else { throw CardError.generic }
         return try withSigningKey(from: transport, pin: pin, alias: alias) { _, sign in try sign(sha256Digest) }
     }
 
-    /// Certificate file: 6 bytes header, zlib stream (2-byte header, raw deflate, Adler-32).
     static func decodeCertificateFile(_ f: [UInt8]) throws -> Data {
         guard f.count > 6 + 2 + 4 else { throw APDUError.malformed("certificate file too short") }
         let deflate = Array(f[8..<(f.count - 4)])
@@ -213,7 +186,6 @@ enum PKCS15 {
             guard r.isOK else { throw APDUError.unsupportedCard }
         }
 
-        /// SELECT strategies in order: Le=FF, no Le, no Le with P2=04 (FCI). The first that works is remembered.
         private func select(_ fid: [UInt8]) throws -> APDUResponse {
             var last = APDUResponse(data: [], sw: 0x6F00)
             for s in selectStrategy.map({ [$0] }) ?? [0, 1, 2] {
@@ -249,14 +221,11 @@ enum PKCS15 {
             return out
         }
 
-        /// Public key file: 00 05, 1 byte, private key FID (2), then length-prefixed modulus and exponent.
         private func privateKeyFID(inPublicKeyFile f: [UInt8]) -> [UInt8]? {
             guard f.count >= 7, f[0] == 0x00, f[1] == 0x05 else { return nil }
             return [f[3], f[4]]
         }
 
-        /// Directory file 8FFF: entry count (LE16) then 2-byte FIDs stored low byte first. Each entry is a meta
-        /// file: class(1) fileName(2) labelLen(1) label idLen(1)=20 id. Class 1 = certificate.
         func discoverCertificates() throws -> [CardCertificate] {
             let index = try readFile([0x8F, 0xFF])
             guard index.count >= 2 else { throw APDUError.malformed("index too short") }
@@ -268,7 +237,7 @@ enum PKCS15 {
                 let fid = [index[3 + i * 2], index[2 + i * 2]]
                 do {
                     let m = try readFile(fid)
-                    guard m.count >= 4, m[0] == 1 || m[0] == 2 else { continue }  // certificates and keys only
+                    guard m.count >= 4, m[0] == 1 || m[0] == 2 else { continue }
                     let file = Array(m[1..<3])
                     let labelLen = Int(m[3])
                     guard m.count >= 5 + labelLen + 20, m[4 + labelLen] == 20 else { continue }
@@ -281,14 +250,16 @@ enum PKCS15 {
                     }
                 } catch let e as APDUError {
                     if case .transport = e { throw e }
-                    continue  // corrupt or unreadable object: keep the others
+                    continue
                 }
             }
             let out = certs.map { c in
-                CardCertificate(
+
+                let holder = (try? CertificateInfo(der: c.der).holderName) ?? ""
+                let name = !holder.isEmpty ? holder : (c.label.isEmpty ? "Certificate" : c.label)
+                return CardCertificate(
                     der: c.der,
-                    alias: Alias(alias: c.id.map { String(format: "%02X", $0) }.joined(),
-                                 name: c.label.isEmpty ? "Certificate" : c.label),
+                    alias: Alias(alias: c.id.map { String(format: "%02X", $0) }.joined(), name: name),
                     isSigning: PKCS15.isSigningCert(c.der),
                     privateKeyFID: keyFIDs[c.id])
             }

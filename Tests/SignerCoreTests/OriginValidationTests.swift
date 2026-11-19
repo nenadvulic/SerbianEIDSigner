@@ -20,7 +20,6 @@ final class OriginValidationTests: XCTestCase {
         return p
     }
 
-    /// Sends a raw WebSocket upgrade request and returns the HTTP status line.
     private func statusLine(port: Int, origin: String?) throws -> String {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         defer { close(fd) }

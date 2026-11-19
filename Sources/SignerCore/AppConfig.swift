@@ -1,6 +1,5 @@
 import Foundation
 
-/// Static runtime configuration for the signer app.
 public struct AppConfig: Equatable, Sendable {
     public var ports: [Int]
     public var originAllowlist: [String]
