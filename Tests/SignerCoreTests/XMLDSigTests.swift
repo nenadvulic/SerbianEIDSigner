@@ -17,6 +17,7 @@ final class XMLDSigTests: XCTestCase {
         var received: Data?
         let out = try XMLDSigBuilder().build(
             documentXML: doc, certDER: cert, issuer: "CN=Test & CA, O=X", serial: Data([0x01, 0x00]),
+            subject: "SERIALNUMBER=PNORS-1234567890123,CN=Test Holder",
             sign: { received = $0; return stub })
         XCTAssertEqual(received?.count, 32)
         for uri in ["http://www.w3.org/2000/09/xmldsig#enveloped-signature",
@@ -29,16 +30,22 @@ final class XMLDSigTests: XCTestCase {
         XCTAssertTrue(out.contains("<X509IssuerName>CN=Test &amp; CA, O=X</X509IssuerName>"))
         XCTAssertTrue(out.contains("<X509SerialNumber>256</X509SerialNumber>"))
         XCTAssertTrue(out.contains("<X509Certificate>\(cert.base64EncodedString())</X509Certificate>"))
+        XCTAssertTrue(out.contains("<X509SubjectName>SERIALNUMBER=PNORS-1234567890123,CN=Test Holder</X509SubjectName>"))
+
+        let posCert = out.range(of: "<X509Certificate>")!.lowerBound
+        let posIssuer = out.range(of: "<X509IssuerSerial>")!.lowerBound
+        let posSubject = out.range(of: "<X509SubjectName>")!.lowerBound
+        XCTAssertTrue(posCert < posIssuer && posIssuer < posSubject)
         XCTAssertTrue(out.contains("<SignatureValue>\(stub.base64EncodedString())</SignatureValue>"))
-        // DigestValue = SHA-256 of canonical original document
+
         let canon = try XMLDSigBuilder.canonicalize(xml: doc)
         let d = Data(SHA256.hash(data: canon)).base64EncodedString()
         XCTAssertTrue(out.contains("<DigestValue>\(d)</DigestValue>"))
-        // Enveloped transform check: canonical output minus Signature == canonical original
+
         let sigRange = out.range(of: "<Signature")!
         XCTAssertTrue(out.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("</Signature></Invoice>"))
         XCTAssertTrue(sigRange.lowerBound > out.startIndex)
-        // Digest passed to signer = SHA-256 of canonical SignedInfo (as in final doc)
+
         let si = try XMLDSigBuilder.canonicalizeSignedInfo(inSignedXML: out)
         XCTAssertEqual(received, Data(SHA256.hash(data: si)))
     }
@@ -47,9 +54,6 @@ final class XMLDSigTests: XCTestCase {
         XCTAssertThrowsError(try XMLDSigBuilder().build(documentXML: "", certDER: Data(), issuer: "x", serial: Data([1]), sign: { $0 }))
     }
 
-    /// Golden value written by hand from the C14N 1.0 spec (not produced by our code): SignedInfo
-    /// inherits the default dsig namespace (declared on Signature) and xmlns:e (declared on the root).
-    /// The apex must render both: default namespace first, then prefixed ones; xmlns:l is out of scope.
     func testSignedInfoGoldenInheritedNamespaces() throws {
         let doc = "<e:Invoice xmlns:e=\"urn:e\" xmlns=\"urn:def\"><e:Line xmlns:l=\"urn:l\" l:a=\"1\"/></e:Invoice>"
         let out = try XMLDSigBuilder().build(documentXML: doc, certDER: Data([1]), issuer: "I", serial: Data([1]), sign: { _ in Data([9]) })

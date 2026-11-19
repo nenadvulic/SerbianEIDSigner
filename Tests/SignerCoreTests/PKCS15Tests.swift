@@ -2,8 +2,6 @@ import XCTest
 import Compression
 @testable import SignerCore
 
-/// In-memory card (approach from SerbianEIDToken's PKICardTests, MIT): files by FID,
-/// SELECT sets the current file, READ BINARY slices it.
 private final class FileCard: APDUTransport {
     var files: [[UInt8]: [UInt8]] = [:]
     var verifySW: UInt16 = 0x9000
@@ -67,7 +65,7 @@ final class PKCS15Tests: XCTestCase {
 
     private func makeCard() -> FileCard {
         let card = FileCard()
-        // index: 2 entries, FIDs stored low byte first -> 0x7001, 0x7002
+
         card.files[[0x8F, 0xFF]] = [2, 0, 0x01, 0x70, 0x02, 0x70]
         card.files[[0x70, 0x01]] = meta(1, file: [0x71, 0x01], label: "Auth", id: 0xA1)
         card.files[[0x70, 0x02]] = meta(1, file: [0x71, 0x02], label: "Signature", id: 0xB2)
@@ -81,13 +79,13 @@ final class PKCS15Tests: XCTestCase {
         XCTAssertEqual(certs.count, 2)
         XCTAssertEqual(certs.map { $0.isSigning }, [false, true])
         XCTAssertEqual(certs[1].der, PKCS15Fixtures.certSignature)
-        XCTAssertEqual(certs[1].alias, Alias(alias: String(repeating: "B2", count: 20), name: "Signature"))
+        XCTAssertEqual(certs[1].alias, Alias(alias: String(repeating: "B2", count: 20), name: "Test Signature"))
     }
 
     func testSigningCertificatePicksNonRepudiationCert() throws {
         let (der, alias) = try PKCS15.signingCertificate(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
         XCTAssertEqual(der, PKCS15Fixtures.certSignature)
-        XCTAssertEqual(alias.name, "Signature")
+        XCTAssertEqual(alias.name, "Test Signature")
     }
 
     func testWrongPINMapsToPinIncorrectAndSendsOneVerify() {
@@ -126,24 +124,22 @@ final class PKCS15Tests: XCTestCase {
 
     func testServiceFilterKeepsOnlySigningCert() throws {
         let aliases = try PKCS15.signingAliases(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
-        XCTAssertEqual(aliases.map { $0.name }, ["Signature"])
+        XCTAssertEqual(aliases.map { $0.name }, ["Test Signature"])
     }
 
     func testMUPATRGate() {
-        let known = Array(Data(base64Encoded: "O/mWAACAMf5FU0NFNyBHQ04zXg==")!)  // 3BF99600008031FE45534345372047434E335E
+        let known = Array(Data(base64Encoded: "O/mWAACAMf5FU0NFNyBHQ04zXg==")!)
         XCTAssertEqual(known.first, 0x3B)
         XCTAssertTrue(PKCS15.isMUPATR(known))
         XCTAssertFalse(PKCS15.isMUPATR([0x3B, 0x8F, 0x80, 0x01]))
         XCTAssertFalse(PKCS15.isMUPATR([]))
     }
 
-    // MARK: signing
-
     private func makeSigningCard() -> FileCard {
         let card = makeCard()
         card.files[[0x8F, 0xFF]] = [3, 0, 0x01, 0x70, 0x02, 0x70, 0x03, 0x70]
         card.files[[0x70, 0x03]] = meta(2, file: [0x72, 0x03], label: "SigKey", id: 0xB2)
-        // public key file: 00 05 xx, private key FID 60 05, len-prefixed modulus and exponent
+
         card.files[[0x72, 0x03]] = [0x00, 0x05, 0x00, 0x60, 0x05, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x03, 0x01, 0x00, 0x01]
         return card
     }

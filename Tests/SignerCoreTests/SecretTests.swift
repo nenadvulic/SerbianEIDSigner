@@ -4,9 +4,6 @@ import XCTest
 final class SecretTests: XCTestCase {
     private let pin = "48151623"
 
-    // COMPILE-TIME GUARANTEE: `Secret` must never conform to Encodable. Adding that conformance
-    // would let a PIN flow into any Envelope/response. Do NOT add `extension Secret: Encodable`;
-    // a check like `XCTAssertFalse((Secret(bytes: []) as Any) is Encodable)` guards it at runtime.
     func testSecretIsNotEncodable() {
         XCTAssertFalse((Secret(bytes: Array(pin.utf8)) as Any) is Encodable)
     }

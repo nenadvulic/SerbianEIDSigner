@@ -48,7 +48,7 @@ final class SessionCounter {
 }
 
 extension XCTestCase {
-    /// Calls `handle` and waits for the single response; also reports whether `send` ran on the main thread.
+
     func respond(_ d: MessageHandler, _ r: Request) throws -> (data: Data, onMain: Bool) {
         let exp = expectation(description: "response")
         var out: Data?

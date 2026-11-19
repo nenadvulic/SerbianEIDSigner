@@ -1,9 +1,35 @@
 import Foundation
 
-/// Issuer name (RFC 2253 string) and serial number bytes of an X.509 certificate, read straight from the DER.
 struct CertificateInfo {
     let issuer: String
     let serial: Data
+
+    let subject: String
+
+    let subjectAttributes: [(oid: [UInt8], value: String)]
+
+    var holderName: String { Self.holderName(fromSubjectAttributes: subjectAttributes) }
+
+    private static let oidGivenName: [UInt8] = [0x55, 4, 42]
+    private static let oidSurname: [UInt8] = [0x55, 4, 4]
+    private static let oidCommonName: [UInt8] = [0x55, 4, 3]
+
+    static func holderName(fromSubjectAttributes attrs: [(oid: [UInt8], value: String)]) -> String {
+        func first(_ oid: [UInt8]) -> String? { attrs.first { $0.oid == oid }?.value }
+        if let given = first(oidGivenName), let surname = first(oidSurname) {
+            return "\(given.trimmingCharacters(in: .whitespaces)) \(surname.trimmingCharacters(in: .whitespaces))"
+        }
+        if let cn = first(oidCommonName) {
+
+            if let re = try? NSRegularExpression(pattern: #"^(.+?) \d{13}-\d{13}, .+$"#),
+               let m = re.firstMatch(in: cn, range: NSRange(cn.startIndex..., in: cn)),
+               let r = Range(m.range(at: 1), in: cn) {
+                return String(cn[r])
+            }
+            return cn
+        }
+        return ""
+    }
 
     enum ParseError: Error { case malformed }
 
@@ -33,6 +59,7 @@ struct CertificateInfo {
     private static let attributeNames: [[UInt8]: String] = [
         [0x55, 4, 3]: "CN", [0x55, 4, 7]: "L", [0x55, 4, 8]: "ST", [0x55, 4, 10]: "O",
         [0x55, 4, 11]: "OU", [0x55, 4, 6]: "C", [0x55, 4, 9]: "STREET",
+        [0x55, 4, 4]: "SURNAME", [0x55, 4, 42]: "GIVENNAME", [0x55, 4, 5]: "SERIALNUMBER",
         [0x09, 0x92, 0x26, 0x89, 0x93, 0xF2, 0x2C, 0x64, 0x01, 0x19]: "DC",
         [0x09, 0x92, 0x26, 0x89, 0x93, 0xF2, 0x2C, 0x64, 0x01, 0x01]: "UID",
     ]
@@ -47,17 +74,31 @@ struct CertificateInfo {
         guard tbsTLV.tag == 0x30 else { throw ParseError.malformed }
         var t = Reader(b: b, pos: tbsTLV.content.lowerBound, end: tbsTLV.content.upperBound)
         var f = try t.next()
-        if f.tag == 0xA0 { f = try t.next() }  // optional [0] version
+        if f.tag == 0xA0 { f = try t.next() }
         guard f.tag == 0x02, !f.content.isEmpty else { throw ParseError.malformed }
         serial = Data(b[f.content])
-        _ = try t.next()  // signature algorithm
-        let name = try t.next()
-        guard name.tag == 0x30 else { throw ParseError.malformed }
-        issuer = try Self.rfc2253(b, name.content)
+        _ = try t.next()
+        let issuerName = try t.next()
+        guard issuerName.tag == 0x30 else { throw ParseError.malformed }
+        issuer = try Self.parseName(b, issuerName.content).string
+
+        if t.pos < t.end {
+            _ = try t.next()
+            let subjectName = try t.next()
+            guard subjectName.tag == 0x30 else { throw ParseError.malformed }
+            let parsedSubject = try Self.parseName(b, subjectName.content)
+            subject = parsedSubject.string
+            subjectAttributes = parsedSubject.attrs
+        } else {
+            subject = ""
+            subjectAttributes = []
+        }
     }
 
-    private static func rfc2253(_ b: [UInt8], _ range: Range<Int>) throws -> String {
+    private static func parseName(_ b: [UInt8], _ range: Range<Int>)
+        throws -> (string: String, attrs: [(oid: [UInt8], value: String)]) {
         var rdns: [String] = []
+        var attrs: [(oid: [UInt8], value: String)] = []
         var r = Reader(b: b, pos: range.lowerBound, end: range.upperBound)
         while r.pos < r.end {
             let set = try r.next()
@@ -78,10 +119,11 @@ struct CertificateInfo {
                     ? String(bytes: raw, encoding: .utf16BigEndian) ?? ""
                     : String(decoding: raw, as: UTF8.self)
                 parts.append("\(key)=\(escape(text))")
+                attrs.append((oidBytes, text))
             }
             rdns.append(parts.joined(separator: "+"))
         }
-        return rdns.reversed().joined(separator: ",")
+        return (rdns.reversed().joined(separator: ","), attrs)
     }
 
     private static func escape(_ s: String) -> String {

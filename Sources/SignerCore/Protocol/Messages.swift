@@ -9,7 +9,6 @@ public enum Operation: String, Codable, Sendable {
     case getSignedXml = "GET_SIGNED_XML"
 }
 
-/// Wire status code; encodes as a bare JSON number. 0 = success.
 public struct Status: Codable, Equatable, Sendable {
     public let code: Int
     public init(_ code: Int) { self.code = code }
@@ -35,8 +34,6 @@ public struct Envelope<Payload: Codable>: Codable {
     }
 }
 
-/// Typed request input, decoded per operation. PIN-bearing inputs go
-/// Decoder -> Secret directly, with no dynamic/Encodable intermediary.
 public enum RequestInput {
     case none
     case getInfo(GetInfoInput)
@@ -64,7 +61,6 @@ public struct Request: Decodable {
     }
 }
 
-/// Holds PIN bytes. Deliberately not Encodable; redacted when printed; zeroized on deinit.
 public final class Secret: Decodable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     private var storage: [UInt8]
     public var bytes: [UInt8] { storage }
@@ -80,7 +76,6 @@ public final class Secret: Decodable, CustomStringConvertible, CustomDebugString
     public var debugDescription: String { "<redacted>" }
     public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
 
-    /// Zeroes in place via memset_s, which the optimizer is not allowed to elide.
     static func zeroize(_ a: inout [UInt8]) {
         a.withUnsafeMutableBytes { buf in
             if let base = buf.baseAddress, buf.count > 0 { _ = memset_s(base, buf.count, 0, buf.count) }

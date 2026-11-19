@@ -75,7 +75,6 @@ final class WebSocketServerTests: XCTestCase {
         try await assertOnOpen(host: "[::1]", port: port)
     }
 
-    /// Real (masking) client -> server request must round-trip to a response. Regression: server used masked payload.
     func testMaskedClientMessageRoundTripsToServerResponse() async throws {
         let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: ReplyHandler())
         let port = try server.start()
@@ -89,7 +88,7 @@ final class WebSocketServerTests: XCTestCase {
         defer { t.cancel(with: .goingAway, reason: nil) }
 
         try await t.send(.string(#"{"operation":"GET_PROVIDERS"}"#))
-        // Watchdog: closing the task makes a pending receive() throw, so a missing reply fails fast instead of hanging.
+
         let watchdog = Task { try await Task.sleep(nanoseconds: 5_000_000_000); t.cancel(with: .goingAway, reason: nil) }
         defer { watchdog.cancel() }
         let reply = try await t.receive()

@@ -4,15 +4,12 @@ import NIOPosix
 import NIOHTTP1
 import NIOWebSocket
 
-/// Application-side handler for a WebSocket connection. Text frames carry JSON.
-/// `send` writes one text frame back to the connection that produced the call.
 public protocol MessageHandler: AnyObject {
-    /// Called once per accepted connection, right after the upgrade completes.
+
     func onOpen(send: @escaping (Data) -> Void)
-    /// Called for each successfully decoded request frame on that connection.
+
     func handle(_ request: Request, send: @escaping (Data) -> Void)
-    /// Called once per accepted connection to get the handler for that connection, so per-connection
-    /// state (e.g. the selected terminal) is never shared between clients. Default: the handler itself.
+
     func makeConnectionHandler() -> MessageHandler
 }
 
@@ -24,7 +21,7 @@ public final class WebSocketServer {
     public static let defaultPorts = [17165, 20806, 65097]
 
     private let ports: [Int]
-    // Enforced at the handshake: upgrade only when the request Origin is listed.
+
     private let originAllowlist: [String]
     private let handler: MessageHandler
     private var group: MultiThreadedEventLoopGroup?
@@ -36,10 +33,6 @@ public final class WebSocketServer {
         self.handler = handler
     }
 
-    /// Binds both loopback addresses (127.0.0.1 and ::1) on the first port of the list that can be bound,
-    /// and returns it. The portal connects to `ws://localhost:PORT` and Chromium on macOS tries `::1` first.
-    /// A port is only taken when 127.0.0.1 AND ::1 both bind; if IPv6 loopback is unavailable on the host
-    /// (EADDRNOTAVAIL/EAFNOSUPPORT) the server degrades to IPv4-only rather than failing to start.
     public func start() throws -> Int {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let handler = self.handler
@@ -49,8 +42,7 @@ public final class WebSocketServer {
             .childChannelInitializer { channel in
                 let upgrader = NIOWebSocketServerUpgrader(
                     shouldUpgrade: { channel, head in
-                        // Missing or non-allowlisted Origin: decline (nil) so the request
-                        // falls through to ForbiddenHandler, which answers 403.
+
                         guard let origin = head.headers.first(name: "Origin"),
                               allowlist.contains(origin) else {
                             return channel.eventLoop.makeSucceededFuture(nil)
@@ -84,13 +76,13 @@ public final class WebSocketServer {
                         self.channels = [v4]
                     } else {
                         try? v4.close().wait()
-                        throw error  // ::1 busy on this port: try next
+                        throw error
                     }
                 }
                 self.group = group
                 return boundPort
             } catch {
-                lastError = error  // address in use (or other bind failure): try next
+                lastError = error
             }
         }
         try? group.syncShutdownGracefully()
@@ -110,7 +102,6 @@ public final class WebSocketServer {
     }
 }
 
-/// Receives only requests that were NOT upgraded (declined handshake) and answers 403.
 private final class ForbiddenHandler: ChannelInboundHandler, RemovableChannelHandler {
     static let name = "ForbiddenHandler"
     typealias InboundIn = HTTPServerRequestPart
@@ -148,7 +139,7 @@ private final class WebSocketFrameHandler: ChannelInboundHandler {
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
-        // Pipeline is already upgraded when this handler is added.
+
         if context.channel.isActive { handler.onOpen(send: makeSend(context)) }
     }
 
@@ -177,7 +168,7 @@ private final class WebSocketFrameHandler: ChannelInboundHandler {
     private func dispatch(_ context: ChannelHandlerContext) {
         let data = Data(buffer.readableBytesView)
         buffer.clear()
-        // Malformed frames are dropped; error replies belong to the handler layer.
+
         guard let request = try? JSONDecoder().decode(Request.self, from: data) else { return }
         handler.handle(request, send: makeSend(context))
     }

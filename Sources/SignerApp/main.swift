@@ -1,5 +1,3 @@
-// Menu-bar app shell: starts the SmartBox-compatible loopback WebSocket server, shows a status item,
-// and registers as a login item. GUI/hardware behaviour is verified manually (see the Task 11 report).
 import AppKit
 import ServiceManagement
 import SignerCore
