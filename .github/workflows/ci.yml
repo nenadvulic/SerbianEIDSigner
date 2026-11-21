@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      # Pinned XcodeGen release (same as release.yml); the zip is verified by checksum.
+      XCODEGEN_VERSION: 2.45.3
+      XCODEGEN_SHA256: 0c90f4d28ca57335f9fa78cf5bf6dabfe20a232036dabe36de2eef79cb7c0878
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test package
+        run: swift test
+
+      - name: Install XcodeGen (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/xcodegen"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          echo "$XCODEGEN_SHA256  $dir/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$dir/xcodegen.zip" -d "$dir"
+          "$dir/xcodegen/bin/xcodegen" --version | grep -qx "Version: $XCODEGEN_VERSION"
+          echo "$dir/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Xcode project
+        working-directory: TokenApp
+        run: |
+          cp Local.xcconfig.example Local.xcconfig
+          xcodegen generate
+
+      - name: Build app (unsigned, universal)
+        working-directory: TokenApp
+        run: |
+          xcodebuild -project SerbianEIDSigner.xcodeproj \
+            -scheme SerbianEIDSigner \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Install dmgbuild (pinned, hash-checked)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/dmgvenv"
+          "$RUNNER_TEMP/dmgvenv/bin/pip" install --quiet --require-hashes --only-binary=:all: -r scripts/dmg/requirements.txt
+          echo "$RUNNER_TEMP/dmgvenv/bin" >> "$GITHUB_PATH"
+
+      - name: Build DMG (unsigned, layout check)
+        run: |
+          set -euo pipefail
+          scripts/make-dmg.sh TokenApp/build/Build/Products/Release/SerbianEIDSigner.app 0.0.0 "$RUNNER_TEMP/ci.dmg"
+          # The app inside the DMG must carry no extended attributes (codesign --strict rejects FinderInfo).
+          mnt=$(mktemp -d "$RUNNER_TEMP/ci-dmg.XXXXXX")
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$RUNNER_TEMP/ci.dmg"
+          trap 'hdiutil detach "$mnt" -force || true' EXIT
+          attrs=$(xattr "$mnt/SerbianEIDSigner.app")
+          [ -z "$attrs" ] || { echo "unexpected xattrs on app: $attrs"; exit 1; }
+
+      - name: Verify universal binary
+        working-directory: TokenApp
+        run: |
+          bin=build/Build/Products/Release/SerbianEIDSigner.app/Contents/MacOS/SerbianEIDSigner
+          archs=$(lipo -archs "$bin")
+          echo "archs: $archs"
+          case " $archs " in *" x86_64 "*) ;; *) echo "missing x86_64"; exit 1;; esac
+          case " $archs " in *" arm64 "*) ;; *) echo "missing arm64"; exit 1;; esac

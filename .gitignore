@@ -3,3 +3,4 @@
 .worktrees/
 TokenApp/Local.xcconfig
 TokenApp/*.xcodeproj
+TokenApp/build/

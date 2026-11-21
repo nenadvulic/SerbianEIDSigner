@@ -33,12 +33,14 @@ targets:
       - path: ../Sources/SignerApp
       - path: App/Info.plist
         buildPhase: none
+      - path: App/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: rs.serbiandocuments.SerbianEIDSigner
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/App.entitlements
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: SerbianEIDSigner
         product: SignerCore
