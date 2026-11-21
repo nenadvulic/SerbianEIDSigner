@@ -14,22 +14,13 @@ private final class ReplyHandler: MessageHandler {
 }
 
 final class WebSocketServerTests: XCTestCase {
-    private func freePort() throws -> Int {
-        let g = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? g.syncShutdownGracefully() }
-        let ch = try ServerBootstrap(group: g).bind(host: "127.0.0.1", port: 0).wait()
-        let p = ch.localAddress!.port!
-        try ch.close().wait()
-        return p
-    }
-
     func testBindsFirstFreePortOfList() throws {
         let g = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { try? g.syncShutdownGracefully() }
         let blocker = try ServerBootstrap(group: g).bind(host: "127.0.0.1", port: 0).wait()
         defer { try? blocker.close().wait() }
         let busy = blocker.localAddress!.port!
-        let free = try freePort()
+        let free = try freeLoopbackPort()
 
         let server = WebSocketServer(ports: [busy, free], originAllowlist: [], handler: OpenHandler())
         let bound = try server.start()
@@ -38,7 +29,7 @@ final class WebSocketServerTests: XCTestCase {
     }
 
     func testTwoConcurrentClientsEachGetOnOpen() async throws {
-        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
+        let server = WebSocketServer(ports: [try freeLoopbackPort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
         let port = try server.start()
         defer { server.stop() }
 
@@ -67,7 +58,7 @@ final class WebSocketServerTests: XCTestCase {
     }
 
     func testReachableViaLocalhostAndBothLoopbackFamilies() async throws {
-        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
+        let server = WebSocketServer(ports: [try freeLoopbackPort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: OpenHandler())
         let port = try server.start()
         defer { server.stop() }
         try await assertOnOpen(host: "localhost", port: port)
@@ -76,7 +67,7 @@ final class WebSocketServerTests: XCTestCase {
     }
 
     func testMaskedClientMessageRoundTripsToServerResponse() async throws {
-        let server = WebSocketServer(ports: [try freePort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: ReplyHandler())
+        let server = WebSocketServer(ports: [try freeLoopbackPort()], originAllowlist: ["https://eporezi.purs.gov.rs"], handler: ReplyHandler())
         let port = try server.start()
         defer { server.stop() }
 

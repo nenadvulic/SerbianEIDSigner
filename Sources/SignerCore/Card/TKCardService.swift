@@ -6,6 +6,7 @@ final class SmartCardTransport: APDUTransport {
     init(card: TKSmartCard) { self.card = card; card.cla = 0x00 }
 
     func transmit(_ apdu: APDU) throws -> APDUResponse {
+        // CryptoTokenKit encodes Le=256 as 0.
         let le: Int?
         switch apdu.le {
         case nil: le = nil
@@ -52,23 +53,13 @@ public final class TKCardService: CardService {
     }
 
     public func certificates(providerId: Int, terminalId: Int, pin: Secret) throws -> [Alias] {
-        guard providerId == Self.mupProvider.id else { throw CardError.middleware }
-        let slots = occupiedSlots()
-        guard slots.indices.contains(terminalId), let card = slots[terminalId].slot.makeSmartCard() else {
-            throw CardError.generic
-        }
-        let transport = SmartCardTransport(card: card)
-        do {
-            return try card.withSession {
-                try PKCS15.signingAliases(from: transport, pin: pin)
-            }
-        } catch let e as CardError {
-            throw e
-        } catch {
-            throw CardError.generic
+        try withTransport(providerId: providerId, terminalId: terminalId) {
+            try PKCS15.signingAliases(from: $0, pin: pin)
         }
     }
 
+    // One TKSmartCard session per operation, so VERIFY and the signature run in the
+    // same session without another client in between.
     private func withTransport<T>(providerId: Int, terminalId: Int, _ body: @escaping (APDUTransport) throws -> T) throws -> T {
         guard providerId == Self.mupProvider.id else { throw CardError.middleware }
         let slots = occupiedSlots()

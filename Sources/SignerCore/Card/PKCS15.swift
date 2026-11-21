@@ -31,10 +31,10 @@ struct CardCertificate {
     let der: Data
     let alias: Alias
     let isSigning: Bool
-
     let privateKeyFID: [UInt8]?
 }
 
+/// PKCS#15 layout of the MUP eID card, as read from real cards.
 enum PKCS15 {
     static let appletAID: [UInt8] = [0xA0, 0x00, 0x00, 0x00, 0x63, 0x50, 0x4B, 0x43, 0x53, 0x2D, 0x31, 0x35]
 
@@ -44,6 +44,8 @@ enum PKCS15 {
         atr.starts(with: mupATRPrefix)
     }
 
+    /// The card holds an authentication and a signing certificate; only the latter has
+    /// nonRepudiation (keyUsage bit 1) and is the one ePorezi expects.
     static func isSigningCert(_ der: Data) -> Bool {
         guard let bits = keyUsageByte(der) else { return false }
         return bits & 0x40 != 0
@@ -81,9 +83,10 @@ enum PKCS15 {
         return b[bitString.start + 1]
     }
 
+    /// Selects the applet, sends a single VERIFY and reads every certificate.
+    /// Never retries a failed VERIFY: three wrong PINs lock the card.
     static func certificates(from transport: APDUTransport, pin: Secret) throws -> [CardCertificate] {
         do {
-
             var digits = pin.bytes
             defer { Secret.zeroize(&digits) }
             guard (4...8).contains(digits.count), digits.allSatisfy({ (0x30...0x39).contains($0) }) else {
@@ -91,6 +94,7 @@ enum PKCS15 {
             }
             let reader = FileReader(transport: transport)
             try reader.selectApplet()
+            // The PIN is ASCII, right-padded with 0x00 to 8 bytes, reference 0x80.
             var padded = digits + [UInt8](repeating: 0, count: 8 - digits.count)
             defer { Secret.zeroize(&padded) }
             let verify = try transport.transmit(APDU(ins: 0x20, p1: 0x00, p2: 0x80, data: padded))
@@ -111,24 +115,12 @@ enum PKCS15 {
         try certificates(from: transport, pin: pin).filter { $0.isSigning }.map { $0.alias }
     }
 
-    static func signingCertificate(from transport: APDUTransport, pin: Secret) throws -> (cert: Data, alias: Alias) {
-        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.isSigning }) else {
-            throw CardError.generic
-        }
-        return (c.der, c.alias)
-    }
-
-    static func certificateDER(from transport: APDUTransport, pin: Secret, alias: Alias) throws -> Data {
-        guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias.alias == alias.alias }) else {
-            throw CardError.generic
-        }
-        return c.der
-    }
-
     static let sha256DigestInfoPrefix: [UInt8] = [
         0x30, 0x31, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
     ]
 
+    /// Verifies the PIN once, then hands `body` the certificate and a closure that signs a
+    /// SHA-256 digest on the card (MSE SET + PSO COMPUTE DIGITAL SIGNATURE, RSA PKCS#1 v1.5).
     static func withSigningKey<T>(from transport: APDUTransport, pin: Secret, alias: Alias,
                                   _ body: (_ certDER: Data, _ sign: (Data) throws -> Data) throws -> T) throws -> T {
         guard let c = try certificates(from: transport, pin: pin).first(where: { $0.alias.alias == alias.alias }),
@@ -139,6 +131,7 @@ enum PKCS15 {
             guard sha256Digest.count == 32 else { throw CardError.generic }
             let digestInfo = sha256DigestInfoPrefix + [UInt8](sha256Digest)
             do {
+                // 80: algorithm reference 02, 84: FID of the private key.
                 let mse = try transport.transmit(APDU(ins: 0x22, p1: 0x41, p2: 0xB6, data: [0x80, 0x01, 0x02, 0x84, 0x02] + keyFID))
                 guard mse.isOK else { throw CardError.generic }
                 let pso = try transport.transmit(APDU(ins: 0x2A, p1: 0x9E, p2: 0x00, data: digestInfo, le: 256))
@@ -153,11 +146,8 @@ enum PKCS15 {
         return try body(c.der, sign)
     }
 
-    static func sign(from transport: APDUTransport, pin: Secret, alias: Alias, sha256Digest: Data) throws -> Data {
-        guard sha256Digest.count == 32 else { throw CardError.generic }
-        return try withSigningKey(from: transport, pin: pin, alias: alias) { _, sign in try sign(sha256Digest) }
-    }
-
+    /// Certificate files are a 6-byte header, a 2-byte zlib header, raw deflate data and a
+    /// 4-byte trailer.
     static func decodeCertificateFile(_ f: [UInt8]) throws -> Data {
         guard f.count > 6 + 2 + 4 else { throw APDUError.malformed("certificate file too short") }
         let deflate = Array(f[8..<(f.count - 4)])
@@ -186,6 +176,8 @@ enum PKCS15 {
             guard r.isOK else { throw APDUError.unsupportedCard }
         }
 
+        // Not every card accepts the same SELECT FILE form (with Le, without Le, P2=04).
+        // Try each once, then keep the one that worked.
         private func select(_ fid: [UInt8]) throws -> APDUResponse {
             var last = APDUResponse(data: [], sw: 0x6F00)
             for s in selectStrategy.map({ [$0] }) ?? [0, 1, 2] {
@@ -226,6 +218,9 @@ enum PKCS15 {
             return [f[3], f[4]]
         }
 
+        // 8FFF is an index: little-endian count, then little-endian FIDs of object records.
+        // A record is: class (1 = certificate, 2 = public key), data FID, label, 20-byte id.
+        // A certificate and its key pair share the same id.
         func discoverCertificates() throws -> [CardCertificate] {
             let index = try readFile([0x8F, 0xFF])
             guard index.count >= 2 else { throw APDUError.malformed("index too short") }
@@ -253,8 +248,8 @@ enum PKCS15 {
                     continue
                 }
             }
-            let out = certs.map { c in
-
+            return certs.map { c in
+                // ePorezi shows `name` as the logged-in user, so use the holder, not the label.
                 let holder = (try? CertificateInfo(der: c.der).holderName) ?? ""
                 let name = !holder.isEmpty ? holder : (c.label.isEmpty ? "Certificate" : c.label)
                 return CardCertificate(
@@ -263,7 +258,6 @@ enum PKCS15 {
                     isSigning: PKCS15.isSigningCert(c.der),
                     privateKeyFID: keyFIDs[c.id])
             }
-            return out
         }
     }
 }

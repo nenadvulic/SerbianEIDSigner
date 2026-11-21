@@ -3,9 +3,7 @@ import Foundation
 struct CertificateInfo {
     let issuer: String
     let serial: Data
-
     let subject: String
-
     let subjectAttributes: [(oid: [UInt8], value: String)]
 
     var holderName: String { Self.holderName(fromSubjectAttributes: subjectAttributes) }
@@ -20,7 +18,7 @@ struct CertificateInfo {
             return "\(given.trimmingCharacters(in: .whitespaces)) \(surname.trimmingCharacters(in: .whitespaces))"
         }
         if let cn = first(oidCommonName) {
-
+            // MUP CNs look like "PETAR PETROVIĆ 1234567890123-1234567890123, ..."; keep the name.
             if let re = try? NSRegularExpression(pattern: #"^(.+?) \d{13}-\d{13}, .+$"#),
                let m = re.firstMatch(in: cn, range: NSRange(cn.startIndex..., in: cn)),
                let r = Range(m.range(at: 1), in: cn) {

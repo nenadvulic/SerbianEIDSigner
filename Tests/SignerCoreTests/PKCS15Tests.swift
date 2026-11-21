@@ -49,6 +49,10 @@ private func meta(_ cls: UInt8, file: [UInt8], label: String, id: UInt8) -> [UIn
     [cls] + file + [UInt8(label.utf8.count)] + Array(label.utf8) + [20] + [UInt8](repeating: id, count: 20)
 }
 
+private func sign(_ card: FileCard, alias: Alias, digest: Data, pin: String = "1234") throws -> Data {
+    try PKCS15.withSigningKey(from: card, pin: Secret(bytes: Array(pin.utf8)), alias: alias) { _, sign in try sign(digest) }
+}
+
 final class PKCS15Tests: XCTestCase {
     func testSigningCertHasNonRepudiation() {
         XCTAssertTrue(PKCS15.isSigningCert(PKCS15Fixtures.certSignature))
@@ -65,7 +69,6 @@ final class PKCS15Tests: XCTestCase {
 
     private func makeCard() -> FileCard {
         let card = FileCard()
-
         card.files[[0x8F, 0xFF]] = [2, 0, 0x01, 0x70, 0x02, 0x70]
         card.files[[0x70, 0x01]] = meta(1, file: [0x71, 0x01], label: "Auth", id: 0xA1)
         card.files[[0x70, 0x02]] = meta(1, file: [0x71, 0x02], label: "Signature", id: 0xB2)
@@ -80,12 +83,6 @@ final class PKCS15Tests: XCTestCase {
         XCTAssertEqual(certs.map { $0.isSigning }, [false, true])
         XCTAssertEqual(certs[1].der, PKCS15Fixtures.certSignature)
         XCTAssertEqual(certs[1].alias, Alias(alias: String(repeating: "B2", count: 20), name: "Test Signature"))
-    }
-
-    func testSigningCertificatePicksNonRepudiationCert() throws {
-        let (der, alias) = try PKCS15.signingCertificate(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
-        XCTAssertEqual(der, PKCS15Fixtures.certSignature)
-        XCTAssertEqual(alias.name, "Test Signature")
     }
 
     func testWrongPINMapsToPinIncorrectAndSendsOneVerify() {
@@ -114,14 +111,6 @@ final class PKCS15Tests: XCTestCase {
         XCTAssertTrue(card.sent.isEmpty)
     }
 
-    func testNoSigningCertThrowsGeneric() {
-        let card = makeCard()
-        card.files[[0x71, 0x02]] = cardFile(forDER: PKCS15Fixtures.certAuthOnly)
-        XCTAssertThrowsError(try PKCS15.signingCertificate(from: card, pin: Secret(bytes: Array("1234".utf8)))) {
-            XCTAssertEqual($0 as? CardError, .generic)
-        }
-    }
-
     func testServiceFilterKeepsOnlySigningCert() throws {
         let aliases = try PKCS15.signingAliases(from: makeCard(), pin: Secret(bytes: Array("1234".utf8)))
         XCTAssertEqual(aliases.map { $0.name }, ["Test Signature"])
@@ -139,7 +128,7 @@ final class PKCS15Tests: XCTestCase {
         let card = makeCard()
         card.files[[0x8F, 0xFF]] = [3, 0, 0x01, 0x70, 0x02, 0x70, 0x03, 0x70]
         card.files[[0x70, 0x03]] = meta(2, file: [0x72, 0x03], label: "SigKey", id: 0xB2)
-
+        // Public key file; bytes 3-4 hold the private key FID (60 05).
         card.files[[0x72, 0x03]] = [0x00, 0x05, 0x00, 0x60, 0x05, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x03, 0x01, 0x00, 0x01]
         return card
     }
@@ -148,7 +137,7 @@ final class PKCS15Tests: XCTestCase {
         let card = makeSigningCard()
         let digest = Data((0..<32).map { UInt8($0) })
         let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
-        let sig = try PKCS15.sign(from: card, pin: Secret(bytes: Array("1234".utf8)), alias: alias, sha256Digest: digest)
+        let sig = try sign(card, alias: alias, digest: digest)
         XCTAssertEqual(sig, Data(repeating: 0xCD, count: 256))
         XCTAssertEqual(card.sent.filter { $0.ins == 0x20 }.count, 1)
         let mse = try XCTUnwrap(card.sent.first { $0.ins == 0x22 })
@@ -162,15 +151,14 @@ final class PKCS15Tests: XCTestCase {
     }
 
     func testSignRejectsBadDigestUnknownAliasAndAuthCert() {
-        let pin = Secret(bytes: Array("1234".utf8))
         let good = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
-        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: good, sha256Digest: Data([1, 2])))
+        XCTAssertThrowsError(try sign(makeSigningCard(), alias: good, digest: Data([1, 2])))
         let unknown = Alias(alias: "00", name: "x")
-        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: unknown, sha256Digest: Data(count: 32))) {
+        XCTAssertThrowsError(try sign(makeSigningCard(), alias: unknown, digest: Data(count: 32))) {
             XCTAssertEqual($0 as? CardError, .generic)
         }
         let auth = Alias(alias: String(repeating: "A1", count: 20), name: "Auth")
-        XCTAssertThrowsError(try PKCS15.sign(from: makeSigningCard(), pin: pin, alias: auth, sha256Digest: Data(count: 32))) {
+        XCTAssertThrowsError(try sign(makeSigningCard(), alias: auth, digest: Data(count: 32))) {
             XCTAssertEqual($0 as? CardError, .generic)
         }
     }
@@ -193,15 +181,9 @@ final class PKCS15Tests: XCTestCase {
         let card = makeSigningCard()
         card.verifySW = 0x63C2
         let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
-        XCTAssertThrowsError(try PKCS15.sign(from: card, pin: Secret(bytes: Array("1234".utf8)), alias: alias, sha256Digest: Data(count: 32))) {
+        XCTAssertThrowsError(try sign(card, alias: alias, digest: Data(count: 32))) {
             XCTAssertEqual($0 as? CardError, .pinIncorrect)
         }
         XCTAssertFalse(card.sent.contains { $0.ins == 0x22 || $0.ins == 0x2A })
-    }
-
-    func testCertificateDERByAlias() throws {
-        let alias = Alias(alias: String(repeating: "B2", count: 20), name: "Signature")
-        let der = try PKCS15.certificateDER(from: makeSigningCard(), pin: Secret(bytes: Array("1234".utf8)), alias: alias)
-        XCTAssertEqual(der, PKCS15Fixtures.certSignature)
     }
 }

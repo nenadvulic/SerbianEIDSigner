@@ -9,24 +9,20 @@ final class SignedXmlFlowTests: XCTestCase {
     private lazy var req = makeReq("<doc><a>1</a></doc>")
 
     private func decodedPayload(_ j: [String: Any]) throws -> String {
-
         let obj = try XCTUnwrap(j["payload"] as? [String: Any])
         let b = try XCTUnwrap(obj["xml"] as? String)
         return String(decoding: try XCTUnwrap(Data(base64Encoded: b), "payload.xml not base64"), as: UTF8.self)
     }
 
-    private func run(_ stub: StubCardService, onThread: ((Bool) -> Void)? = nil) throws -> [String: Any] {
-        let exp = expectation(description: "response")
-        var out: Data?
-        let r = try JSONDecoder().decode(Request.self, from: Data(req.utf8))
-        Dispatcher(card: stub).handle(r) { out = $0; onThread?(Thread.isMainThread); exp.fulfill() }
-        wait(for: [exp], timeout: 5)
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
+    private func run(_ stub: StubCardService, request: String? = nil) throws -> (json: [String: Any], onMain: Bool) {
+        let r = try JSONDecoder().decode(Request.self, from: Data((request ?? req).utf8))
+        let (data, onMain) = try respond(Dispatcher(card: stub), r)
+        return (try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]), onMain)
     }
 
     func testSignedXmlMatchesProfileAndStubSignature() throws {
         let stub = StubCardService()
-        let j = try run(stub)
+        let j = try run(stub).json
         XCTAssertEqual(j["operation"] as? String, "GET_SIGNED_XML")
         XCTAssertEqual(j["status"] as? Int, 0)
         let xml = try decodedPayload(j)
@@ -47,11 +43,7 @@ final class SignedXmlFlowTests: XCTestCase {
     func testRealPortalShapeBase64WithDeclarationAndNamespacedRoot() throws {
         let raw = #"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:Root xmlns:ns2="urn:x"><a>1</a></ns2:Root>"#
         let stub = StubCardService()
-        let exp = expectation(description: "r")
-        var out: Data?
-        Dispatcher(card: stub).handle(try JSONDecoder().decode(Request.self, from: Data(makeReq(raw).utf8))) { out = $0; exp.fulfill() }
-        wait(for: [exp], timeout: 5)
-        let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
+        let j = try run(stub, request: makeReq(raw)).json
         XCTAssertEqual(j["status"] as? Int, 0)
         let xml = try decodedPayload(j)
         XCTAssertTrue(xml.contains("ns2:Root"), xml)
@@ -60,12 +52,7 @@ final class SignedXmlFlowTests: XCTestCase {
 
     func testInvalidBase64IsGenericError() throws {
         let bad = req.replacingOccurrences(of: Self.b64("<doc><a>1</a></doc>"), with: "!!notbase64!!")
-        let exp = expectation(description: "r")
-        var out: Data?
-        Dispatcher(card: StubCardService()).handle(try JSONDecoder().decode(Request.self, from: Data(bad.utf8))) { out = $0; exp.fulfill() }
-        wait(for: [exp], timeout: 5)
-        let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
-        XCTAssertEqual(j["status"] as? Int, 1500)
+        XCTAssertEqual(try run(StubCardService(), request: bad).json["status"] as? Int, 1500)
     }
 
     func testOneSigningOperationUsesOneCardSession() throws {
@@ -75,32 +62,24 @@ final class SignedXmlFlowTests: XCTestCase {
     }
 
     func testCardWorkRunsOffTheCallerThread() throws {
-        var onMain: Bool?
-        _ = try run(StubCardService(), onThread: { onMain = $0 })
-        XCTAssertEqual(onMain, false)
+        XCTAssertFalse(try run(StubCardService()).onMain)
     }
 
     func testPinErrorsMapToStatus() throws {
         var stub = StubCardService()
         stub.signError = .pinIncorrect
-        XCTAssertEqual(try run(stub)["status"] as? Int, 1440)
+        XCTAssertEqual(try run(stub).json["status"] as? Int, 1440)
         stub.signError = .pinLocked
-        XCTAssertEqual(try run(stub)["status"] as? Int, 1441)
+        XCTAssertEqual(try run(stub).json["status"] as? Int, 1441)
         stub.signError = .generic
-        XCTAssertEqual(try run(stub)["status"] as? Int, 1500)
+        XCTAssertEqual(try run(stub).json["status"] as? Int, 1500)
         stub.signError = nil
         stub.signCertError = .pinIncorrect
-        XCTAssertEqual(try run(stub)["status"] as? Int, 1440)
+        XCTAssertEqual(try run(stub).json["status"] as? Int, 1440)
     }
 
     func testMalformedXmlIsGenericError() throws {
-        let exp = expectation(description: "r")
-        var out: Data?
-        let bad = makeReq("<doc>")
-        Dispatcher(card: StubCardService()).handle(try JSONDecoder().decode(Request.self, from: Data(bad.utf8))) { out = $0; exp.fulfill() }
-        wait(for: [exp], timeout: 5)
-        let j = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(out)) as? [String: Any])
-        XCTAssertEqual(j["status"] as? Int, 1500)
+        XCTAssertEqual(try run(StubCardService(), request: makeReq("<doc>")).json["status"] as? Int, 1500)
     }
 
     func testTerminalIsPerConnectionNotShared() throws {

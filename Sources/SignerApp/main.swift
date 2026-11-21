@@ -4,7 +4,6 @@ import SignerCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let config = AppConfig.default
     private var server: WebSocketServer?
     private var statusItem: NSStatusItem?
 
@@ -24,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
 
         do {
-            let srv = WebSocketServer(ports: config.ports, originAllowlist: config.originAllowlist,
+            let srv = WebSocketServer(originAllowlist: [WebSocketServer.eporeziOrigin],
                                       handler: Dispatcher(card: TKCardService()))
             let port = try srv.start()
             server = srv

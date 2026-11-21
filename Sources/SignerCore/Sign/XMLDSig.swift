@@ -51,6 +51,7 @@ public struct XMLDSigBuilder {
         let isr = Self.element("X509IssuerSerial", parent: x509, ns: ns)
         _ = Self.element("X509IssuerName", parent: isr, ns: ns, text: issuer)
         _ = Self.element("X509SerialNumber", parent: isr, ns: ns, text: Self.decimal(serial))
+        // ePorezi reads the user from X509SubjectName and rejects the login without it.
         if !subject.isEmpty { _ = Self.element("X509SubjectName", parent: x509, ns: ns, text: subject) }
 
         var buf: UnsafeMutablePointer<xmlChar>?
@@ -93,7 +94,6 @@ public struct XMLDSigBuilder {
         let rc: Int32 = withUnsafeMutablePointer(to: &root) { p in
             let cb: xmlC14NIsVisibleCallback? = subtree == nil ? nil : { ud, node, parent in
                 guard let target = ud!.assumingMemoryBound(to: xmlNodePtr?.self).pointee else { return 1 }
-
                 var cur: xmlNodePtr? = node
                 if node?.pointee.type == XML_NAMESPACE_DECL { cur = parent }
                 while let c = cur {

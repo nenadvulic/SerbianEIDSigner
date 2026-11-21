@@ -1,6 +1,4 @@
 import XCTest
-import NIOCore
-import NIOPosix
 @testable import SignerCore
 
 private final class NoopHandler: MessageHandler {
@@ -10,15 +8,6 @@ private final class NoopHandler: MessageHandler {
 
 final class OriginValidationTests: XCTestCase {
     private let allowed = "https://eporezi.purs.gov.rs"
-
-    private func freePort() throws -> Int {
-        let g = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? g.syncShutdownGracefully() }
-        let ch = try ServerBootstrap(group: g).bind(host: "127.0.0.1", port: 0).wait()
-        let p = ch.localAddress!.port!
-        try ch.close().wait()
-        return p
-    }
 
     private func statusLine(port: Int, origin: String?) throws -> String {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -45,7 +34,7 @@ final class OriginValidationTests: XCTestCase {
     }
 
     private func run(origin: String?) throws -> String {
-        let server = WebSocketServer(ports: [try freePort()], originAllowlist: [allowed], handler: NoopHandler())
+        let server = WebSocketServer(ports: [try freeLoopbackPort()], originAllowlist: [allowed], handler: NoopHandler())
         let port = try server.start()
         defer { server.stop() }
         return try statusLine(port: port, origin: origin)

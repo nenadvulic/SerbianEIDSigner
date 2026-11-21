@@ -5,11 +5,9 @@ import NIOHTTP1
 import NIOWebSocket
 
 public protocol MessageHandler: AnyObject {
-
     func onOpen(send: @escaping (Data) -> Void)
-
     func handle(_ request: Request, send: @escaping (Data) -> Void)
-
+    /// Called once per WebSocket connection, so per-connection state stays isolated.
     func makeConnectionHandler() -> MessageHandler
 }
 
@@ -18,10 +16,11 @@ public extension MessageHandler {
 }
 
 public final class WebSocketServer {
+    // Same port list as SmartBox; the first free one is used.
     public static let defaultPorts = [17165, 20806, 65097]
+    public static let eporeziOrigin = "https://eporezi.purs.gov.rs"
 
     private let ports: [Int]
-
     private let originAllowlist: [String]
     private let handler: MessageHandler
     private var group: MultiThreadedEventLoopGroup?
@@ -42,7 +41,6 @@ public final class WebSocketServer {
             .childChannelInitializer { channel in
                 let upgrader = NIOWebSocketServerUpgrader(
                     shouldUpgrade: { channel, head in
-
                         guard let origin = head.headers.first(name: "Origin"),
                               allowlist.contains(origin) else {
                             return channel.eventLoop.makeSucceededFuture(nil)
@@ -139,14 +137,14 @@ private final class WebSocketFrameHandler: ChannelInboundHandler {
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
-
         if context.channel.isActive { handler.onOpen(send: makeSend(context)) }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        var frame = unwrapInboundIn(data)
+        let frame = unwrapInboundIn(data)
         switch frame.opcode {
         case .text:
+            // Browser frames are always masked: read unmaskedData, never data.
             var payload = frame.unmaskedData
             buffer.clear(); buffer.writeBuffer(&payload); assembling = !frame.fin
             if frame.fin { dispatch(context) }

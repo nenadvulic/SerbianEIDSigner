@@ -1,18 +1,11 @@
 import Foundation
 
-public enum AppInfo {
-    public static let appName = "SmartBox"
-    public static let appVersion = "2.0.0"
-    public static let appBuild = 1
-    public static var osName: String {
-        #if os(macOS)
-        return "Mac OS X"
-        #elseif os(Linux)
-        return "Linux"
-        #else
-        return "Windows"
-        #endif
-    }
+// Sent in ON_OPEN_EVENT: the same identity as the official SmartBox 2.0.0 on macOS.
+enum AppInfo {
+    static let appName = "SmartBox"
+    static let appVersion = "2.0.0"
+    static let appBuild = 1
+    static let osName = "Mac OS X"
 }
 
 struct OpenPayload: Codable {
@@ -48,8 +41,12 @@ public final class Dispatcher: MessageHandler {
     private let card: CardService
     private let encoder = JSONEncoder()
 
+    // All card I/O goes through one serial queue: never two APDU exchanges at once, and
+    // never on the NIO event loop.
     private static let cardQueue = DispatchQueue(label: "signer.card", qos: .userInitiated)
 
+    // GET_SIGNED_XML carries no terminal id; the page relies on the one it used for
+    // GET_CERTIFICATES on the same connection.
     private let terminalLock = NSLock()
     private var lastTerminalId = 0
 
@@ -81,7 +78,7 @@ public final class Dispatcher: MessageHandler {
                 emit(.getProviders, ProvidersPayload(providers: card.providers()), send)
             }
         case .getTerminals:
-            guard case .getTerminals(let input) = request.input else {
+            guard case .getTerminals = request.input else {
                 emit(.getTerminals, EmptyPayload(), status: ErrorStatus.terminalsGeneric, send)
                 return
             }
@@ -97,7 +94,6 @@ public final class Dispatcher: MessageHandler {
                 emit(.getCertificates, EmptyPayload(), status: ErrorStatus.certificatesGeneric, send)
                 return
             }
-
             terminalLock.lock(); lastTerminalId = input.terminalId; terminalLock.unlock()
             onCardQueue { [self] in
                 do {
@@ -113,7 +109,6 @@ public final class Dispatcher: MessageHandler {
                 return
             }
             terminalLock.lock(); let terminalId = lastTerminalId; terminalLock.unlock()
-
             onCardQueue { [self] in
                 signXml(input, terminalId: terminalId, send: send)
             }
@@ -123,8 +118,6 @@ public final class Dispatcher: MessageHandler {
     private func resolveProviderId() -> Int { card.providers().first?.id ?? 0 }
 
     private struct SignedXmlPayload: Codable { let xml: String }
-
-    private func signedXmlPayload(_ xml: String) -> some Codable { SignedXmlPayload(xml: Data(xml.utf8).base64EncodedString()) }
 
     private func signXml(_ input: GetSignedXmlInput, terminalId: Int, send: @escaping (Data) -> Void) {
         do {
@@ -136,7 +129,7 @@ public final class Dispatcher: MessageHandler {
                 return try XMLDSigBuilder().build(documentXML: documentXML, certDER: der, issuer: info.issuer,
                                                   serial: info.serial, subject: info.subject, sign: sign)
             }
-            emit(.getSignedXml, signedXmlPayload(xml), send)
+            emit(.getSignedXml, SignedXmlPayload(xml: Data(xml.utf8).base64EncodedString()), send)
         } catch {
             emit(.getSignedXml, EmptyPayload(), status: ErrorStatus.from(error, generic: ErrorStatus.signGeneric), send)
         }

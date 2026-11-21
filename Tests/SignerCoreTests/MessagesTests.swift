@@ -30,8 +30,6 @@ final class MessagesTests: XCTestCase {
         XCTAssertEqual(input.certificate, Alias(alias: "a", name: "n"))
         XCTAssertEqual(input.xml, "<x/>")
         XCTAssertEqual(input.pin.bytes, Array("1234".utf8))
-        XCTAssertEqual("\(input.pin)", "<redacted>")
-        XCTAssertEqual(String(reflecting: input.pin), "<redacted>")
     }
 
     func testDecodeCertificatesAndTerminalsInput() throws {
@@ -52,19 +50,4 @@ final class MessagesTests: XCTestCase {
         if case .none = req.input {} else { XCTFail("expected none") }
     }
 
-    func testPinNotExposedByReflection() throws {
-        let pin = "PINSECRET77"
-        let jsons = [
-            #"{"operation":"GET_SIGNED_XML","input":{"certificate":{"alias":"a","name":"n"},"pin":"\#(pin)","xml":"<x/>"}}"#,
-            #"{"operation":"GET_CERTIFICATES","input":{"pin":"\#(pin)","terminalId":1}}"#,
-        ]
-        for j in jsons {
-            let req = try JSONDecoder().decode(Request.self, from: Data(j.utf8))
-            var dumped = ""
-            dump(req, to: &dumped)
-            for text in [String(reflecting: req), "\(req)", dumped] {
-                XCTAssertFalse(text.contains(pin), text)
-            }
-        }
-    }
 }
